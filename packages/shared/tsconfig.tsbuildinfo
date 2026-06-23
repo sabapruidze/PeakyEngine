@@ -1,0 +1,1 @@
+{"root":["./src/index.ts","./src/dialogue/script.ts","./src/sm/action.ts","./src/sm/condition.ts","./src/sm/objects.ts","./src/sm/signals.ts","./src/sm/trigger.ts"],"version":"5.9.3"}

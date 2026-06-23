@@ -1,0 +1,569 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* ─── Design tokens ─────────────────────────────────────────────────────────
+   Layered surface model: outer frame → card panel → inner item.
+   Borders are de-emphasized; separation comes from background contrast + gaps.
+   Accents are semantic: yellow=primary/selection, teal=success/run.
+*/
+:root {
+  /* surfaces — dark, flat (outer frame → card panel → inner item) */
+  --frame:        #0e1014;
+  --card:         #171b24;
+  --inner:        #20252f;
+  --inner-hi:     #2b313d;
+  --canvas:       #0a0c11;
+
+  /* text — light on dark */
+  --text:         #e6e9f0;
+  --text-2:       #c4cad6;
+  --text-dim:     #939bab;
+  --text-muted:   #757d8a;
+  --text-faint:   #565d68;
+
+  /* on-accent (text/icon color when foreground sits on a BRIGHT accent fill) */
+  --on-accent:    #14171d;
+
+  /* accents — brightened so they read on a dark surface */
+  --yellow:       #e8b51f;
+  --teal:         #25c4b3;
+  --purple:       #8270f0;
+  --orange:       #e07b2e;
+  --red:          #e85553;
+  --green:        #36b873;
+  --pink:         #e0588f;
+  --blue:         #3f86e6;
+
+  /* axis colors (transform handles, x/y inputs) */
+  --x-axis: var(--red);
+  --y-axis: var(--green);
+
+  /* legacy aliases — old panels still reference these names */
+  --bg:           var(--frame);
+  --panel:        var(--card);
+  --panel-2:      var(--inner);
+  --border:       rgba(255, 255, 255, 0.11);
+  --accent:       var(--yellow);
+  --accent-dim:   #b08a14;
+  --danger:       var(--red);
+
+  /* radii — square everything */
+  --r-frame:      0;
+  --r-card:       0;
+  --r-inner:      0;
+  --r-pill:       0;
+  --r-chip:       0;
+
+  /* spacing */
+  --gap-card:     12px;
+  --pad-card:     14px;
+  --pad-inner:    10px;
+
+  /* shadows — none */
+  --shadow-pop:   none;
+
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-feature-settings: "ss01", "cv11";
+  color: var(--text);
+}
+
+* { box-sizing: border-box; }
+
+/* Square everything — overrides every inline `borderRadius` style and any
+   third-party widget defaults (react-flow nodes, scrollbars, etc.).
+   Exception: `.wradius` elements (UI-widget preview surfaces) keep their
+   authored corner radius so the editor previews match the game runtime. */
+*:not(.wradius), *:not(.wradius)::before, *:not(.wradius)::after { border-radius: 0 !important; }
+
+html, body, #root { margin: 0; padding: 0; height: 100%; background: var(--frame); }
+
+::-webkit-scrollbar              { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb        { background: #3a4150; border-radius: 0; }
+::-webkit-scrollbar-thumb:hover  { background: #4a5263; }
+::-webkit-scrollbar-track        { background: transparent; }
+
+/* ─── Buttons ──────────────────────────────────────────────────────────── */
+
+button {
+  background: var(--inner);
+  color: var(--text);
+  border: none;
+  border-radius: var(--r-pill);
+  padding: 6px 12px;
+  cursor: crosshair;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: none;
+}
+
+/* Override any descendant that still inherits `pointer` (e.g. React Flow). */
+button, [role="button"], .object-row, .seg button, .tabbar .tab, .bp-card, .behavior-card, .ev-row .ev-x, .react-flow__controls-button {
+  cursor: crosshair;
+}
+button:hover { background: var(--inner-hi); }
+button.primary {
+  background: var(--yellow);
+  color: var(--on-accent);
+}
+button.primary:hover { background: #e8b633; }
+button.success {
+  background: var(--teal);
+  color: #ffffff;
+}
+button.success:hover { background: #0c826f; }
+button.danger {
+  background: transparent;
+  color: var(--red);
+}
+button.danger:hover { background: rgba(226,75,74,0.12); }
+button.ghost {
+  background: transparent;
+  color: var(--text-dim);
+}
+button.ghost:hover { background: var(--inner); color: var(--text); }
+
+/* ─── Inputs ───────────────────────────────────────────────────────────── */
+
+input, select, textarea {
+  background: #0f131b;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  width: 100%;
+  outline: none;
+  transition: none;
+}
+input:hover, select:hover, textarea:hover { background: #141925; }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--yellow);
+  background: #0f131b;
+}
+option { background: #171b24; color: var(--text); }
+input[type="number"]::-webkit-inner-spin-button { display: none; }
+/* Checkboxes/radios must NOT inherit the `width: 100%` above — a full-width
+   checkbox renders centered and eats its whole row, pushing sibling labels
+   away (or collapsing them entirely). Keep them intrinsic-sized. */
+input[type="checkbox"], input[type="radio"] {
+  width: auto;
+  flex: none;
+}
+input[type="color"] {
+  padding: 0; height: 22px; width: 32px;
+  border-radius: 0; cursor: pointer;
+}
+
+/* Logic-graph node selects sit on dark node surfaces — give the dropdown
+   popup matching dark bg + bright text so it's readable. `color-scheme:
+   dark` forces the browser to paint the popup chrome (arrow, scrollbar)
+   in dark mode, otherwise Chrome paints a light popup that doesn't blend
+   with the dark options. Scoped to .react-flow descendants so the
+   editor's other selects (light theme) keep their native light popups. */
+.react-flow select {
+  color-scheme: dark;
+}
+.react-flow option {
+  background: #1f2227;
+  color: #f0f1f3;
+}
+
+/* Safety net — any in-node text that inherits without an explicit color
+   gets a bright default so we never get dim grey on dark node bg. Inline
+   styles still win where explicitly set (colored category badges keep
+   their hue). */
+.react-flow__node {
+  color: #f0f0f0;
+}
+
+/* ─── Cards ────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: var(--pad-card);
+  min-height: 0;
+  overflow: hidden;
+}
+.card-flush {
+  background: var(--card);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  min-height: 0;
+}
+.inner-card {
+  background: var(--inner);
+  border-radius: var(--r-inner);
+  padding: var(--pad-inner);
+}
+
+/* ─── Section labels ───────────────────────────────────────────────────── */
+
+.label-uppercase {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 500;
+}
+
+/* ─── Splitters ────────────────────────────────────────────────────────── */
+
+.splitter {
+  background: transparent;
+  cursor: col-resize;
+  width: 12px;
+  flex-shrink: 0;
+  transition: none;
+}
+.splitter:hover, .splitter:active { background: rgba(245, 197, 66, 0.15); }
+
+/* ─── Segmented controls / tabs ────────────────────────────────────────── */
+
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--inner);
+  border-radius: var(--r-pill);
+}
+.seg button {
+  background: transparent;
+  color: var(--text-dim);
+  padding: 5px 12px;
+  border-radius: var(--r-chip);
+  font-size: 11px;
+}
+.seg button:hover { background: rgba(0,0,0,0.04); color: var(--text-2); }
+.seg button.active {
+  background: var(--inner-hi);
+  color: var(--text);
+}
+.seg button.active.primary {
+  background: var(--yellow);
+  color: var(--on-accent);
+}
+
+/* ─── Top tab bar (open Blueprint tabs) ────────────────────────────────── */
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 30px;
+  overflow-x: auto;
+}
+.tabbar .tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  height: 100%;
+  border-radius: var(--r-chip);
+  flex-shrink: 0;
+}
+.tabbar .tab:hover { background: rgba(0,0,0,0.04); color: var(--text-2); }
+.tabbar .tab.active {
+  background: var(--inner-hi);
+  color: var(--text);
+}
+.tabbar .tab .close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 0 2px;
+  cursor: pointer;
+  border-radius: 0;
+  margin-left: 2px;
+}
+.tabbar .tab .close:hover { background: var(--red); color: #fff; }
+.tabbar .tab .swatch { width: 8px; height: 8px; border-radius: 0; flex-shrink: 0; }
+
+/* ─── Object rows ──────────────────────────────────────────────────────── */
+
+.object-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  border-radius: var(--r-inner);
+  margin: 1px 4px;
+  color: var(--text-2);
+  transition: none;
+}
+.object-row:hover { background: var(--inner); }
+.object-row.selected {
+  background: var(--yellow);
+  color: var(--on-accent);
+  font-weight: 500;
+}
+.object-row.selected .swatch { outline: 2px solid var(--on-accent); }
+.object-row .swatch { width: 12px; height: 12px; border-radius: 0; flex-shrink: 0; }
+.object-row .name { flex: 1; font-size: 12px; }
+
+/* ─── Field rows ───────────────────────────────────────────────────────── */
+
+.field {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 12px;
+}
+.field label { color: var(--text-dim); font-size: 11px; }
+
+/* ─── Sections ─────────────────────────────────────────────────────────── */
+
+.section { padding: 6px 0; }
+.section + .section { border-top: 1px solid var(--border); }
+.section .title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 500;
+}
+
+/* ─── Behavior cards ───────────────────────────────────────────────────── */
+
+.behavior-card {
+  background: var(--inner);
+  border-radius: var(--r-inner);
+  padding: 10px 12px;
+  margin: 4px 8px;
+}
+.behavior-card .header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.behavior-card .header .kind { font-weight: 500; color: var(--yellow); font-size: 12px; }
+
+/* ─── Compact event row ────────────────────────────────────────────────── */
+
+.ev-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--inner);
+  border-radius: 0;
+  font-size: 11px;
+  min-height: 28px;
+}
+.ev-row.ev-children-host { background: transparent; padding: 0; min-height: 0; }
+.ev-row .ev-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  flex-shrink: 0;
+}
+.ev-row .ev-arrow { color: var(--text-muted); font-weight: 600; padding: 0 2px; }
+.ev-row select, .ev-row input[type="number"], .ev-row input[type="text"], .ev-row input:not([type]) {
+  font-size: 11px;
+  padding: 2px 5px;
+  height: 22px;
+}
+.ev-row .ev-spacer { flex: 1; }
+.ev-row .ev-x {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 0;
+}
+.ev-row .ev-x:hover { background: var(--red); color: #fff; }
+
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--frame);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 4px 2px 7px;
+  font-size: 11px;
+}
+.action-chip .kind {
+  color: var(--yellow);
+  font-weight: 500;
+  font-size: 10px;
+}
+
+.ev-children {
+  margin-left: 14px;
+  margin-top: 4px;
+  border-left: 2px solid rgba(245, 197, 66, 0.25);
+  padding-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ─── Modals ───────────────────────────────────────────────────────────── */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  width: 480px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal header {
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+.modal .body {
+  padding: 8px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.bp-card {
+  background: var(--inner);
+  border-radius: var(--r-inner);
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: none;
+}
+.bp-card:hover { background: var(--inner-hi); }
+.bp-card .preview { width: 36px; height: 36px; flex-shrink: 0; border-radius: 0; }
+.bp-card .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bp-card .meta .name { font-weight: 500; font-size: 13px; }
+.bp-card .meta .components { font-size: 10px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ─── Mono helper ──────────────────────────────────────────────────────── */
+
+.mono { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-feature-settings: "calt" off; }
+
+/* ─── Legacy panel base (kept for non-card panels) ─────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--card);
+}
+.toolbar h1 {
+  font-size: 13px;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--yellow);
+}
+.toolbar .spacer { flex: 1; }
+
+.scene-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas);
+  border-radius: var(--r-inner);
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+.panel {
+  background: var(--card);
+  overflow-y: auto;
+  min-height: 0;
+}
+.panel h2 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin: 0;
+  padding: 12px 14px 8px;
+  font-weight: 500;
+}
+
+/* ─── React Flow theme overrides ───────────────────────────────────────── */
+
+.react-flow__edge-path { stroke: var(--text-dim); stroke-width: 1.5; }
+.react-flow__edge:hover .react-flow__edge-path { stroke: var(--text); stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: var(--yellow); stroke-width: 2.5; }
+
+/* Kill React Flow's default grab/pointer cursors on the canvas. The pane
+   becomes crosshair for placement vibes; only mid-drag falls back to grabbing. */
+.react-flow__pane,
+.react-flow__pane.draggable,
+.react-flow__node,
+.react-flow__edge { cursor: crosshair !important; }
+.react-flow__pane.dragging,
+.react-flow__node.dragging { cursor: grabbing !important; }
+.react-flow__handle { cursor: crosshair !important; }
+
+/* Selection rectangle (drawn while box-selecting). */
+.react-flow__selection {
+  background: rgba(245, 197, 66, 0.08) !important;
+  border: 1.5px dashed var(--yellow) !important;
+}
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--frame);
+  background: var(--text-2);
+}
+.react-flow__handle:hover { background: var(--yellow); }
+.react-flow__minimap {
+  background: var(--frame) !important;
+  border-radius: 0 !important;
+  border: 1px solid var(--border) !important;
+}
+.react-flow__controls {
+  background: var(--card) !important;
+  border-radius: 0 !important;
+  border: 1px solid var(--border) !important;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--card) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-2) !important;
+}
+.react-flow__controls-button:hover { background: var(--inner-hi) !important; }
+.react-flow__attribution { display: none; }

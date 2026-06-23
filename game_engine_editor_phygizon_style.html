@@ -1,0 +1,241 @@
+<div style="padding: 1rem 0; font-family: var(--font-sans);">
+
+<div style="background: #0e0f12; border-radius: 24px; padding: 18px; display: grid; grid-template-columns: 200px 1fr; gap: 18px;">
+
+  <!-- ============ LEFT SIDEBAR ============ -->
+  <div style="background: #16181c; border-radius: 20px; padding: 22px 16px; display: flex; flex-direction: column; min-height: 540px;">
+    <!-- logo -->
+    <div style="display: flex; align-items: center; gap: 8px; padding: 0 6px; margin-bottom: 32px;">
+      <div style="width: 26px; height: 26px; border-radius: 7px; background: #f5c542; display: flex; align-items: center; justify-content: center;">
+        <div style="width: 10px; height: 10px; background: #0e0f12; border-radius: 2px; transform: rotate(45deg);"></div>
+      </div>
+      <span style="color: #2dd4bf; font-size: 17px; font-weight: 500; letter-spacing: -0.3px;">forge</span>
+    </div>
+
+    <!-- nav -->
+    <div style="display: flex; flex-direction: column; gap: 4px;">
+      <!-- active -->
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: #f5c542; color: #0e0f12;">
+        <div style="width: 16px; height: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px;">
+          <div style="background: #0e0f12; border-radius: 2px;"></div>
+          <div style="background: #0e0f12; border-radius: 2px;"></div>
+          <div style="background: #0e0f12; border-radius: 2px;"></div>
+          <div style="background: #0e0f12; border-radius: 2px;"></div>
+        </div>
+        <span style="font-size: 13px; font-weight: 500;">Scene</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px; border: 1.5px solid #8b8d93; border-radius: 3px;"></div>
+        <span style="font-size: 13px;">Assets</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px;">
+          <div style="width: 100%; height: 2px; background: #8b8d93; margin-top: 3px; border-radius: 1px;"></div>
+          <div style="width: 70%; height: 2px; background: #8b8d93; margin-top: 3px; border-radius: 1px;"></div>
+          <div style="width: 100%; height: 2px; background: #8b8d93; margin-top: 3px; border-radius: 1px;"></div>
+        </div>
+        <span style="font-size: 13px;">Script</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px; border: 1.5px solid #8b8d93; border-radius: 50%;"></div>
+        <span style="font-size: 13px;">Animation</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px; position: relative;">
+          <div style="position: absolute; width: 12px; height: 12px; border: 1.5px solid #8b8d93; border-radius: 50%; top: 2px; left: 2px;"></div>
+          <div style="position: absolute; width: 4px; height: 4px; background: #8b8d93; border-radius: 50%; top: 6px; left: 6px;"></div>
+        </div>
+        <span style="font-size: 13px;">Physics</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px; position: relative;">
+          <div style="position: absolute; width: 5px; height: 10px; background: #8b8d93; border-radius: 1px; left: 2px; top: 3px;"></div>
+          <div style="position: absolute; width: 0; height: 0; border-left: 7px solid transparent; border-right: 0 solid transparent; border-top: 5px solid transparent; border-bottom: 5px solid transparent; left: 7px; top: 3px;"></div>
+        </div>
+        <span style="font-size: 13px;">Audio</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; color: #8b8d93;">
+        <div style="width: 16px; height: 16px; border: 1.5px solid #8b8d93; border-radius: 50%; position: relative;">
+          <div style="position: absolute; width: 6px; height: 1.5px; background: #8b8d93; top: 6px; left: 5px;"></div>
+        </div>
+        <span style="font-size: 13px;">Settings</span>
+      </div>
+    </div>
+
+    <!-- run button at bottom -->
+    <div style="margin-top: auto; padding: 0 4px;">
+      <div style="background: #2dd4bf; border-radius: 14px; padding: 11px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #0e0f12; font-weight: 500; font-size: 13px;">
+        <div style="width: 0; height: 0; border-left: 8px solid #0e0f12; border-top: 5px solid transparent; border-bottom: 5px solid transparent;"></div>
+        Run project
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RIGHT MAIN AREA ============ -->
+  <div style="display: flex; flex-direction: column; gap: 16px;">
+
+    <!-- top: project header + stat tiles -->
+    <div style="background: #16181c; border-radius: 20px; padding: 18px; display: grid; grid-template-columns: 180px 1fr 1fr 1fr 1fr; gap: 14px; align-items: stretch;">
+      <!-- project info -->
+      <div style="display: flex; flex-direction: column; justify-content: center;">
+        <div style="font-size: 11px; color: #6b6d72; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Project</div>
+        <div style="font-size: 22px; font-weight: 500; color: #f1f2f4; line-height: 1.1;">Untitled</div>
+        <div style="font-size: 11px; color: #6b6d72; margin-top: 6px;">v 0.1.0 · 2D</div>
+      </div>
+      <!-- nodes tile (purple) -->
+      <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+        <div style="width: 30px; height: 30px; border-radius: 8px; background: #5b4ce0; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
+          <div style="width: 12px; height: 12px; border: 1.5px solid #fff; border-radius: 2px;"></div>
+        </div>
+        <div style="font-size: 11px; color: #6b6d72;">Nodes</div>
+        <div style="font-size: 18px; font-weight: 500; color: #f1f2f4; margin-top: 2px;">128</div>
+      </div>
+      <!-- sprites tile (blue) -->
+      <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+        <div style="width: 30px; height: 30px; border-radius: 8px; background: #3b82d6; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
+          <div style="width: 13px; height: 11px; background: #fff; border-radius: 2px;"></div>
+        </div>
+        <div style="font-size: 11px; color: #6b6d72;">Sprites</div>
+        <div style="font-size: 18px; font-weight: 500; color: #f1f2f4; margin-top: 2px;">64</div>
+      </div>
+      <!-- physics tile (orange) -->
+      <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+        <div style="width: 30px; height: 30px; border-radius: 8px; background: #e8743b; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
+          <div style="width: 12px; height: 12px; border: 1.5px solid #fff; border-radius: 50%;"></div>
+        </div>
+        <div style="font-size: 11px; color: #6b6d72;">Bodies</div>
+        <div style="font-size: 18px; font-weight: 500; color: #f1f2f4; margin-top: 2px;">12</div>
+      </div>
+      <!-- fps tile (green) -->
+      <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+        <div style="width: 30px; height: 30px; border-radius: 8px; background: #2dd4bf; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
+          <div style="width: 10px; height: 10px; border: 1.5px solid #0e0f12; border-radius: 50%; border-top-color: transparent;"></div>
+        </div>
+        <div style="font-size: 11px; color: #6b6d72;">FPS</div>
+        <div style="font-size: 18px; font-weight: 500; color: #f1f2f4; margin-top: 2px;">60</div>
+      </div>
+    </div>
+
+    <!-- middle: viewport + selected node card -->
+    <div style="display: grid; grid-template-columns: 1fr 240px; gap: 16px;">
+      <!-- viewport -->
+      <div style="background: #16181c; border-radius: 20px; padding: 16px; min-height: 220px; position: relative; overflow: hidden;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 11px; color: #6b6d72; text-transform: uppercase; letter-spacing: 0.5px;">Viewport</div>
+            <div style="font-size: 14px; color: #f1f2f4; font-weight: 500; margin-top: 2px;">main_scene</div>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <div style="width: 28px; height: 28px; border-radius: 8px; background: #1c1e23; display: flex; align-items: center; justify-content: center;">
+              <div style="width: 10px; height: 10px; border: 1.5px solid #8b8d93; border-radius: 50%;"></div>
+            </div>
+            <div style="width: 28px; height: 28px; border-radius: 8px; background: #1c1e23; display: flex; align-items: center; justify-content: center; color: #8b8d93; font-size: 14px;">+</div>
+            <div style="width: 28px; height: 28px; border-radius: 8px; background: #f5c542; display: flex; align-items: center; justify-content: center;">
+              <div style="width: 0; height: 0; border-left: 7px solid #0e0f12; border-top: 4px solid transparent; border-bottom: 4px solid transparent;"></div>
+            </div>
+          </div>
+        </div>
+        <!-- viewport canvas -->
+        <div style="background: #0e0f12; border-radius: 14px; height: 200px; position: relative; overflow: hidden;">
+          <div style="position: absolute; inset: 0; background-image: linear-gradient(#ffffff05 1px, transparent 1px), linear-gradient(90deg, #ffffff05 1px, transparent 1px); background-size: 20px 20px;"></div>
+          <!-- player sprite -->
+          <div style="position: absolute; top: 76px; left: 180px; width: 44px; height: 44px; background: #f5c542; border-radius: 8px;"></div>
+          <div style="position: absolute; top: 70px; left: 174px; width: 56px; height: 56px; border: 1.5px dashed #f5c542; border-radius: 12px;"></div>
+          <!-- enemy sprite -->
+          <div style="position: absolute; top: 110px; left: 380px; width: 32px; height: 32px; background: #e8743b; border-radius: 6px;"></div>
+          <!-- ground -->
+          <div style="position: absolute; bottom: 24px; left: 40px; right: 40px; height: 12px; background: #2dd4bf; border-radius: 4px; opacity: 0.85;"></div>
+          <!-- coords -->
+          <div style="position: absolute; top: 10px; left: 12px; font-size: 10px; color: #6b6d72; font-family: var(--font-mono);">0, 0</div>
+        </div>
+      </div>
+
+      <!-- inspector -->
+      <div style="background: #16181c; border-radius: 20px; padding: 18px;">
+        <div style="font-size: 11px; color: #6b6d72; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Selected</div>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+          <div style="width: 36px; height: 36px; border-radius: 10px; background: #f5c542; display: flex; align-items: center; justify-content: center;">
+            <div style="width: 14px; height: 14px; background: #0e0f12; border-radius: 3px;"></div>
+          </div>
+          <div>
+            <div style="font-size: 15px; font-weight: 500; color: #f1f2f4;">Player</div>
+            <div style="font-size: 11px; color: #6b6d72;">Sprite · 2D</div>
+          </div>
+        </div>
+
+        <div style="background: #1c1e23; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px;">
+          <div style="font-size: 10px; color: #6b6d72; margin-bottom: 4px;">POSITION</div>
+          <div style="display: flex; justify-content: space-between; font-size: 13px; color: #f1f2f4;">
+            <span>x 180</span><span>y 76</span>
+          </div>
+        </div>
+        <div style="background: #1c1e23; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px;">
+          <div style="font-size: 10px; color: #6b6d72; margin-bottom: 4px;">SCALE</div>
+          <div style="display: flex; justify-content: space-between; font-size: 13px; color: #f1f2f4;">
+            <span>x 1.0</span><span>y 1.0</span>
+          </div>
+        </div>
+        <div style="background: #1c1e23; border-radius: 12px; padding: 10px 12px;">
+          <div style="font-size: 10px; color: #6b6d72; margin-bottom: 4px;">OPACITY</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="flex: 1; height: 4px; background: #0e0f12; border-radius: 2px; position: relative;">
+              <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #f5c542; border-radius: 2px;"></div>
+            </div>
+            <span style="font-size: 11px; color: #f1f2f4;">100</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- bottom: hierarchy cards row -->
+    <div style="background: #16181c; border-radius: 20px; padding: 18px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+        <div>
+          <div style="font-size: 11px; color: #6b6d72; text-transform: uppercase; letter-spacing: 0.5px;">Hierarchy</div>
+          <div style="font-size: 14px; color: #f1f2f4; font-weight: 500; margin-top: 2px;">5 nodes in scene</div>
+        </div>
+        <div style="background: #f5c542; color: #0e0f12; padding: 8px 16px; border-radius: 12px; font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 14px;">+</span> Add node
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px;">
+        <!-- player (selected) -->
+        <div style="background: #1c1e23; border-radius: 14px; padding: 12px; border: 1.5px solid #f5c542;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <div style="width: 22px; height: 22px; border-radius: 6px; background: #f5c542;"></div>
+            <span style="font-size: 12px; color: #f1f2f4; font-weight: 500;">Player</span>
+          </div>
+          <div style="font-size: 10px; color: #6b6d72;">Sprite · Body2D</div>
+        </div>
+        <!-- enemy -->
+        <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <div style="width: 22px; height: 22px; border-radius: 6px; background: #e8743b;"></div>
+            <span style="font-size: 12px; color: #f1f2f4; font-weight: 500;">Enemy</span>
+          </div>
+          <div style="font-size: 10px; color: #6b6d72;">Sprite · AI</div>
+        </div>
+        <!-- tilemap -->
+        <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <div style="width: 22px; height: 22px; border-radius: 6px; background: #2dd4bf;"></div>
+            <span style="font-size: 12px; color: #f1f2f4; font-weight: 500;">Ground</span>
+          </div>
+          <div style="font-size: 10px; color: #6b6d72;">Tilemap · 32×8</div>
+        </div>
+        <!-- camera -->
+        <div style="background: #1c1e23; border-radius: 14px; padding: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <div style="width: 22px; height: 22px; border-radius: 6px; background: #5b4ce0;"></div>
+            <span style="font-size: 12px; color: #f1f2f4; font-weight: 500;">Camera</span>
+          </div>
+          <div style="font-size: 10px; color: #6b6d72;">follow Player</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+</div>

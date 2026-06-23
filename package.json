@@ -1,0 +1,21 @@
+{
+  "name": "peaky-engine",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "dev:editor": "npm --workspace @peaky/editor run dev",
+    "dev:demo": "npm --workspace @peaky/example-platformer run dev",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/runtime/tsconfig.json --noEmit && tsc -p packages/editor/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "verify": "npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.4"
+  }
+}
