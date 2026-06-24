@@ -608,6 +608,18 @@ export function InstanceInspector() {
           <input type="number" value={inst.y} onChange={(e) => update(inst.id, { y: +e.target.value })} />
         </div>
         <div className="field">
+          <label>Scale X</label>
+          <input type="number" step={0.1} value={inst.scaleX ?? 1} onChange={(e) => updateAll({ scaleX: +e.target.value })} title="Visual scale. 1 = the BP's default size. Body collision size still comes from w/h." />
+        </div>
+        <div className="field">
+          <label>Scale Y</label>
+          <input type="number" step={0.1} value={inst.scaleY ?? 1} onChange={(e) => updateAll({ scaleY: +e.target.value })} />
+        </div>
+        <div className="field">
+          <label>Angle</label>
+          <input type="number" step={1} value={inst.angle ?? 0} onChange={(e) => updateAll({ angle: +e.target.value })} title="Visual rotation in degrees." />
+        </div>
+        <div className="field">
           <label>Layer</label>
           <select
             value={currentLayerId}

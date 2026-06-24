@@ -605,6 +605,17 @@ export interface BlueprintInstance {
    */
   z?: number;
   /**
+   * Per-instance VISUAL scale (multiplies the BP's size). 1 / missing = no
+   * change. Applied to the host gameObject at spawn; the SpriteRenderer / Text
+   * overlays fold `obj.scaleX/Y` in via syncOverlay, so the art scales too.
+   * (The arcade physics body is not re-sized — use w/h for collision size.)
+   */
+  scaleX?: number;
+  scaleY?: number;
+  /** Per-instance VISUAL rotation in degrees. 0 / missing = none. The overlay
+   *  follows the host's rotation via syncOverlay. */
+  angle?: number;
+  /**
    * Per-instance starting values for variables marked `instanceEditable`
    * on the Blueprint. Applied on top of the BP's defaults at spawn time
    * — so 4 NPC instances can each start with different Money / HP /

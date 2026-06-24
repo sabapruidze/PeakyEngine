@@ -1756,6 +1756,14 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // can target THIS specific placement.
       if (sprite) sprite.instanceId = inst.id;
       if (sprite && inst.name) sprite.instanceName = inst.name;
+      // Per-instance visual scale + angle. The SpriteRenderer / Text overlays
+      // fold the host's scaleX/Y + rotation in via syncOverlay, so the art
+      // follows. (Body size stays driven by w/h / the Collider component.)
+      if (sprite) {
+        const sx = inst.scaleX ?? 1, sy = inst.scaleY ?? 1;
+        if (sx !== 1 || sy !== 1) sprite.gameObject.setScale(sx, sy);
+        if (inst.angle) sprite.gameObject.setAngle(inst.angle);
+      }
       // Spawned-tag list mirrors the runtime sprite.tags exactly — used by
       // wireCollisionsFor() to set up pair listeners. Honor the per-instance
       // override (when the BP allows it) so tag-based collision routing

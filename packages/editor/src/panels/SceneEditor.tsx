@@ -1232,6 +1232,19 @@ export function SceneEditor() {
         const instZIndex = isTiledBg
           ? -1000000
           : -100000 + (instLayerIdx < 0 ? 0 : (scene.layers.length - 1 - instLayerIdx)) * 1000 + 500;
+        // Per-instance visual scale + angle preview. Applied to the WHOLE gizmo
+        // box (incl. selection outline) so it reads rotated/scaled and matches
+        // Play. Origin = the placement point (inst.x, inst.y) within the box —
+        // the frame pivot for sprite BPs, else the box center. `rotate() scale()`
+        // order mirrors Phaser (scale then rotate). Click hit-testing follows the
+        // CSS transform automatically since the handlers live on this same div.
+        const instScaleX = inst.scaleX ?? 1, instScaleY = inst.scaleY ?? 1;
+        const instAngle = inst.angle ?? 0;
+        const instTransform = (instAngle !== 0 || instScaleX !== 1 || instScaleY !== 1)
+          ? `rotate(${instAngle}deg) scale(${instScaleX}, ${instScaleY})`
+          : undefined;
+        const instOriginX = firstFrame?.imageFile ? pivotPxX * sX * scale : (gizmoW * scale) / 2;
+        const instOriginY = firstFrame?.imageFile ? pivotPxY * sY * scale : (gizmoH * scale) / 2;
         return (
           <div
             key={inst.id}
@@ -1262,6 +1275,8 @@ export function SceneEditor() {
               // Inner art is positioned absolutely so it still clips visually
               // to the rect via its own bounds, not via overflow:hidden.
               overflow: "visible",
+              transform: instTransform,
+              transformOrigin: instTransform ? `${instOriginX}px ${instOriginY}px` : undefined,
             }}
             title={`${bp.name} · ${layer.name}${!layer.visible ? " (hidden)" : ""}`}
           >

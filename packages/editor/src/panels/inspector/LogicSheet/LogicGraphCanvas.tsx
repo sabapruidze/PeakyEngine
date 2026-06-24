@@ -1791,6 +1791,11 @@ function ParamField({
   })();
   // Objects — variables hidden until an object is clicked. `varNames` merges
   // this object's locals (no dot) + cross paths ("Object.field").
+  // The Main Logic Sheet runs on an invisible host sprite (no body, no behaviors,
+  // no user vars), so `self` there resolves to that off-screen host — a footgun.
+  // Hide the "This object" group in main sheets; authors use globals / other
+  // objects / picked instead.
+  const isMainSheet = hostBpId.startsWith("__main__:");
   const exprObjects: ExprObject[] = (() => {
     const out: ExprObject[] = [];
     const locals = varNames.filter((n) => !n.includes("."));
@@ -1805,7 +1810,7 @@ function ParamField({
       { token: `var:self.IP.${pt}.x`, hint: `image point ${pt} x` },
       { token: `var:self.IP.${pt}.y`, hint: `image point ${pt} y` },
     ]);
-    out.push({ name: "This object", color: "#0e9384", tokens: [...selfXform, ...locals.map((n) => ({ token: `var:${n}` })), ...selfIPs] });
+    if (!isMainSheet) out.push({ name: "This object", color: "#0e9384", tokens: [...selfXform, ...locals.map((n) => ({ token: `var:${n}` })), ...selfIPs] });
     const byObj = new Map<string, ExprToken[]>();
     for (const p of varNames) {
       const dot = p.indexOf(".");

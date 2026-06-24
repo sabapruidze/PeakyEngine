@@ -150,6 +150,7 @@ function NodesDoc() {
 
 const DOC_TABS = [
   { id: "nodes", label: "Nodes" },
+  { id: "logicSheet", label: "Logic Sheet" },
   { id: "stateMachine", label: "State Machine" },
   { id: "components", label: "Components" },
   { id: "items", label: "Items & Recipes" },
@@ -862,6 +863,292 @@ function UIDoc() {
   );
 }
 
+// ── Logic Sheet visual mockups ──────────────────────────────────────────────
+function FlowNodeMock({ label, sub, color }: { label: string; sub?: string; color: string }) {
+  return (
+    <div style={{ minWidth: 96, background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, overflow: "hidden", fontSize: 11, flex: "0 0 auto" }}>
+      <div style={{ background: color, color: "#06121f", fontWeight: 700, padding: "3px 9px", fontSize: 10 }}>{label}</div>
+      {sub && <div style={{ padding: "6px 9px", color: "#cfd6e6", whiteSpace: "nowrap" }}>{sub}</div>}
+    </div>
+  );
+}
+const flowArrow = (k?: string | number) => <span key={k} style={{ color: "#7f8aa3", fontSize: 16, flex: "0 0 auto" }}>▶</span>;
+
+function ExecChainMock() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "14px 0", padding: "14px", background: "#13161e", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}>
+      <FlowNodeMock label="TRIGGER" sub="On Key Pressed · Jump" color="#e0a14a" />
+      {flowArrow()}
+      <FlowNodeMock label="BRANCH" sub="Is Grounded?" color="#8270f0" />
+      {flowArrow()}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <FlowNodeMock label="▸ TRUE · ACTION" sub="Play 'jump'" color="#3fc66e" />
+        <FlowNodeMock label="▸ TRUE · ACTION" sub="CM Jump" color="#3fc66e" />
+      </div>
+    </div>
+  );
+}
+
+function GroupsMock() {
+  const tabs: [string, boolean][] = [["Combat", true], ["Patrol", false], ["Pickups", true]];
+  return (
+    <div style={{ display: "flex", gap: 6, margin: "12px 0", flexWrap: "wrap" }}>
+      {tabs.map(([n, on]) => (
+        <div key={n} style={{ padding: "6px 14px", borderRadius: "6px 6px 0 0", background: on ? "#20252f" : "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)", borderBottom: on ? "2px solid #5eb3ff" : "1px solid rgba(255,255,255,0.12)", color: on ? "#e6e9f0" : "#6b7488", fontSize: 12.5, fontWeight: on ? 600 : 400 }}>
+          📁 {n}{!on && <span style={{ fontSize: 10, marginLeft: 4 }}>(off)</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LogicSheetDoc() {
+  return (
+    <DocScroll>
+      <H1>Logic Sheets</H1>
+      <P>A <b>Logic Sheet</b> is where you wire game logic visually. You start from a <b>trigger</b> (something happens), optionally check <b>conditions</b>, then run <b>actions</b>. Nodes are connected by <b>exec wires</b> — the <span style={{ color: "#9fc0ff" }}>▶ flow</span> that says "do this, then this". Separate <b>data wires</b> feed values (a number, a variable, another object) into a node's inputs. The <b>Nodes</b> tab lists every node you can drop in; this page explains how they fit together and run.</P>
+      <ExecChainMock />
+      <div style={{ color: "#9aa6ba", fontSize: 12.5, margin: "8px 0" }}>Read it left→right: <i>when Jump is pressed, IF the character is grounded, play the jump animation and do a CM Jump.</i></div>
+
+      <H2>Two kinds of Logic Sheet</H2>
+      <P>There are two places logic lives, and the difference is <b>scope</b>:</P>
+      <DocTable head={["Sheet", "Runs…", "Use it for"]} rows={[
+        [<b>Per-object (Blueprint)</b>, <>Once <b>per instance</b> of that Blueprint. <Code>self</Code> = that instance. 100 sheep = 100 independent copies.</>, "What THIS thing does — an enemy's AI, a pickup's effect, a door's open logic."],
+        [<b>Main Logic Sheet</b>, <>Once, <b>scene-global</b>, on an invisible host (not tied to any object). You can have several, each <b>enabled/disabled</b> on its own.</>, "What the GAME / SCENE does — score, timers, spawning waves, coordinating objects, tutorial gating."],
+      ]} />
+      <Callout tone="tip">Rule of thumb: a health pickup's "heal the player" logic → <b>per-object</b>. A wave spawner or a global score counter → <b>main</b>.</Callout>
+
+      <H2>Groups (the folder tabs)</H2>
+      <P>Every sheet is split into named <b>groups</b> — the folder tabs across the top. They exist for two reasons:</P>
+      <GroupsMock />
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "5px 0" }}><b>Organization</b> — keep Combat / Patrol / Pickups logic in separate tabs so a big sheet stays readable.</li>
+        <li style={{ margin: "5px 0" }}><b>Runtime on/off</b> — you can <b>disable a whole group</b> so all its triggers stop firing, then re-enable it later.</li>
+      </ul>
+      <P>Toggle a group with the <Code>Set Group Active</Code> node — e.g. <Code>Set Group Active &#123; group: "Patrol", active: off &#125;</Code>. It only affects <b>this object's own</b> groups; a disabled group's triggers simply don't fire until you turn it back on.</P>
+      <DocTable head={["Why groups", "Example"]} rows={[
+        ["Boss phases", "Disable the 'phase 1 attacks' group and enable 'phase 2 attacks' when the boss is hit."],
+        ["Tutorial gating", "Keep the 'free roam' group off until the tutorial group signals it's done."],
+        ["Mode switching", "Turn 'patrol' off and 'flee' on the moment an NPC is alerted."],
+        ["Readability", "Find and edit one slice of behavior without scrolling a giant canvas."],
+      ]} />
+
+      <H2>How it executes (the order)</H2>
+      <P>Logic is <b>event-driven</b>, not read top-to-bottom. The model:</P>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "6px 0" }}>Each <b>trigger</b> subscribes to its event when the object spawns. When that event happens, execution starts at the trigger and <b>walks the exec wires</b> through the connected nodes.</li>
+        <li style={{ margin: "6px 0" }}><b>Per-frame triggers</b> (On Step / On Tick, On Key Held, Every N Seconds) fire every frame. <b>One-shot triggers</b> (On Create, On Key Pressed, On Signal, On Collide…) fire the instant their event occurs.</li>
+        <li style={{ margin: "6px 0" }}>Inside a chain, nodes run in <b>wire order</b>. If one output wires to several nodes, they run in the order the wires were made. Conditions feed a <b>Branch</b> that picks the true/false path; flow nodes (Sequence, ForEach, Wait) route or pause the flow.</li>
+        <li style={{ margin: "6px 0" }}>Across objects, each instance runs its own sheet <b>independently</b>; per-frame triggers fire once per instance per frame, in spawn order.</li>
+      </ul>
+      <Callout tone="warn">Groups do <b>not</b> set the order — the <b>exec wires</b> do. Two triggers in different groups both fire whenever their own events happen; there's no "group 1 runs before group 2". If you need a strict order, wire it explicitly (a <Code>Sequence</Code> node) or gate steps with conditions / signals. The order is otherwise deterministic — the same every run.</Callout>
+
+      <H2>self, picked &amp; variables</H2>
+      <DocTable head={["Reference", "Resolves to"]} rows={[
+        [<Code>self</Code>, <>The object running the chain. In a per-object sheet that's the instance; in the <b>Main</b> sheet it's the invisible host (which has no body).</>],
+        [<Code>var:Name</Code>, "A variable on self."],
+        [<Code>global:Name</Code>, "A project-wide global that survives scene changes and save/load."],
+        [<Code>picked</Code>, "The 'other' object from a ForEach loop or a collision — e.g. who you just hit."],
+      ]} />
+      <P>In the <b>Main</b> sheet, since <Code>self</Code> is just a host with no body, you mostly work through <b>globals</b>, <b>ForEach / picked</b>, and <Code>Emit Signal To</Code> to reach the real objects in the scene.</P>
+
+      <H2>Flow-control nodes</H2>
+      <P>These route or pause the exec flow (the full set is in the Nodes tab):</P>
+      <DocTable head={["Node", "What it does to the flow"]} rows={[
+        [<Code>Branch (If)</Code>, "Splits into a true path and a false path based on a condition."],
+        [<Code>Sequence</Code>, "Fires its outputs one after another, in order — guarantees ordering."],
+        [<Code>ForEach</Code>, "Runs the downstream chain once per object with a tag (each becomes 'picked')."],
+        [<Code>Do Once</Code>, "Runs only the first time it's reached (per object)."],
+        [<Code>FlipFlop</Code>, "Alternates between two outputs each time it fires (toggle)."],
+        [<Code>Random</Code>, "Picks one output at random each fire."],
+        [<Code>Repeat</Code>, "Runs the downstream chain N times in a row."],
+        [<Code>While</Code>, "Loops the downstream chain while a condition stays true (capped for safety)."],
+        [<><Code>Wait</Code> / <Code>Wait Realtime</Code></>, "Pauses the chain for N seconds, then continues (Realtime ignores time-scale / pause)."],
+        [<><Code>Wait For Signal</Code> / <Code>Key</Code> / <Code>Anim</Code></>, "Holds the chain until a signal fires, a key is pressed, or an animation finishes."],
+      ]} />
+      <Callout>Because <Code>Wait</Code> pauses one chain without freezing the game, you can build sequences — <i>damage → Wait 2s → recover</i> — and each object's chains run on their own timers.</Callout>
+    </DocScroll>
+  );
+}
+
+// ── Dialogue visual mockups ─────────────────────────────────────────────────
+/** The runtime dialogue bubble (modern theme, default style colors). */
+function DialogueBubbleMock() {
+  return (
+    <div style={{ position: "relative", display: "inline-block", maxWidth: 320, background: "rgba(0,0,0,0.85)", border: "2px solid #ffffff", borderRadius: 10, padding: "10px 14px 14px", boxShadow: "0 6px 18px rgba(0,0,0,0.55)" }}>
+      <div style={{ display: "inline-block", background: "rgba(255,204,102,0.16)", color: "#ffcc66", fontWeight: 700, fontSize: 13, padding: "1px 9px", borderRadius: 6, marginBottom: 6 }}>Alice</div>
+      <div style={{ color: "#ffffff", fontSize: 15, lineHeight: 1.45, fontFamily: "Arial" }}>You finally made it. I wasn't sure you'd come…</div>
+      <div style={{ position: "absolute", right: 9, bottom: 5, color: "#ffffff", fontSize: 11, opacity: 0.8 }}>▼</div>
+    </div>
+  );
+}
+
+/** A faithful copy of one line card from the Dialogue editor. */
+function DialogueLineMock() {
+  const chip = (txt: string, filled = false, color = "#5eb3ff") => (
+    <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, whiteSpace: "nowrap", background: filled ? color : "transparent", color: filled ? "#06121f" : color, border: `1px solid ${color}`, fontWeight: filled ? 700 : 400 }}>{txt}</span>
+  );
+  return (
+    <div style={{ width: 380, background: "#171b24", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ color: "#6b7488", fontSize: 11, width: 14 }}>1</span>
+        <span style={{ ...mInput("Alice"), flex: 1, fontWeight: 600 }}>Alice</span>
+        <span style={{ color: "#6b7488", fontSize: 12 }}>↑ ↓ ✕</span>
+      </div>
+      <div style={{ background: "#0f131b", border: "1px solid rgba(255,255,255,0.11)", borderRadius: 4, padding: "6px 8px", fontSize: 12, color: "#e6e9f0", fontFamily: "ui-monospace,monospace", lineHeight: 1.4 }}>You finally made it. I wasn't sure you'd come…</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7 }}>
+        {chip("wait 0.5 s ✕", true, "#5eb3ff")}
+        {chip("emit DoorOpens ✕", true, "#c77bff")}
+        {chip("+ choice", false, "#5fae74")}
+      </div>
+      <div style={{ marginTop: 8, paddingLeft: 14, borderLeft: "2px solid #e8b51f" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ color: "#8b93a6", fontSize: 11 }}>1</span><span style={{ ...mInput("Open the door"), flex: 1 }}>Open the door</span><span style={{ color: "#e85553" }}>✕</span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, paddingLeft: 18, fontSize: 10.5, color: "#8b93a6" }}>emit <span style={{ ...mInput("ChoseOpen"), padding: "2px 6px" }}>ChoseOpen</span> go to <span style={{ ...mInput(""), padding: "2px 6px", display: "inline-flex", gap: 8 }}>—<span style={{ color: "#757d8a" }}>▾</span></span></div>
+      </div>
+    </div>
+  );
+}
+
+/** Mock of the Dialog Flow timeline — chapters (columns) × NPC (rows). */
+function DialogFlowGridMock() {
+  const kindBadge = (txt: string, c: string) => <span style={{ fontSize: 8.5, padding: "1px 5px", borderRadius: 3, background: c, color: "#06121f", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{txt}</span>;
+  const card = (dlg: string, badge: ReactNode) => (
+    <div style={{ background: "#1c2230", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 5, padding: "5px 7px", display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ fontSize: 11, color: "#e6e9f0", fontWeight: 600 }}>{dlg}</span>{badge}
+    </div>
+  );
+  const COLS = "120px 1fr 1fr";
+  const head = (t: string) => <div style={{ padding: "6px 8px", fontSize: 11, fontWeight: 700, color: "#9fb0d0", textTransform: "uppercase", letterSpacing: 0.4 }}>{t}</div>;
+  const npc = (t: string) => <div style={{ padding: "8px", fontSize: 12, fontWeight: 600, color: "#cdd6e6", display: "flex", alignItems: "center" }}>{t}</div>;
+  return (
+    <div style={{ border: "1px solid rgba(255,255,255,0.14)", borderRadius: 8, overflow: "hidden", background: "#13161e", margin: "12px 0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: COLS, background: "rgba(255,255,255,0.04)" }}>{head("NPC")}{head("Act 1 — Village")}{head("Act 2 — Cave")}</div>
+      <div style={{ display: "grid", gridTemplateColumns: COLS, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+        {npc("BP_Elder")}
+        <div style={{ padding: 6, borderLeft: "1px solid rgba(255,255,255,0.06)" }}>{card("Greeting", kindBadge("On Interact", "#5fd28b"))}</div>
+        <div style={{ padding: 6, borderLeft: "1px solid rgba(255,255,255,0.06)" }}>{card("Warning", kindBadge("On Enter Scene", "#5eb3ff"))}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: COLS, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+        {npc("BP_Merchant")}
+        <div style={{ padding: 6, borderLeft: "1px solid rgba(255,255,255,0.06)" }}>{card("Shop Intro", kindBadge("On Interact", "#5fd28b"))}</div>
+        <div style={{ padding: 6, borderLeft: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", color: "#5f6b82", fontSize: 11 }}>+ Add Trigger</div>
+      </div>
+    </div>
+  );
+}
+
+const DIALOGUE_THEMES: [string, string][] = [
+  ["modern", "Soft rounded corners, drop shadow, speaker pill. The default."],
+  ["jrpg", "Square corners, double-line border, speaker box top-left."],
+  ["comic", "Rounded speech bubble with a downward tail (overhead mode)."],
+  ["comic-shout", "Jagged starburst outline — combat / loud lines."],
+  ["comic-thought", "Cloud-puffy perimeter with trailing thought bubbles."],
+  ["comic-whisper", "Dashed, translucent outline — quiet lines."],
+  ["comic-news", "Sharp rectangle with a halftone-dot pattern — narrator captions."],
+  ["image", "Your own 9-slice PNG box (designer-authored)."],
+];
+
+function DialogueDoc() {
+  return (
+    <DocScroll>
+      <H1>Dialogue &amp; Dialog Flow</H1>
+      <P>Two pieces work together. A <b>Dialogue</b> is the <i>script</i> — an ordered list of spoken lines (with branching choices). The <b>Dialog Flow</b> timeline is the <i>director</i> — it decides <b>which</b> dialogue plays, on <b>which</b> NPC, and <b>when</b> (on interact, on entering a scene, or on a signal). You can also just fire a dialogue straight from logic with the <Code>PlayDialogue</Code> node.</P>
+
+      <H2>The dialogue bubble</H2>
+      <P>At runtime the engine draws its own bubble above the speaker (or fixed at the screen bottom). This is the default <b>modern</b> theme:</P>
+      <div style={{ margin: "14px 0", display: "flex", justifyContent: "center" }}><DialogueBubbleMock /></div>
+      <DocTable head={["Setting", "What it does"]} rows={[
+        ["Display mode", <><b>Overhead</b> = bubble floats above the speaker in the world. <b>Box</b> = fixed at the bottom of the screen (HUD).</>],
+        ["Theme", "The bubble's look — see the themes below."],
+        ["Text / Speaker color", <>Defaults: white text, <span style={{ color: "#ffcc66" }}>warm-yellow speaker</span> (<Code>#ffcc66</Code>).</>],
+        ["BG color / opacity", <>Default black at <Code>0.85</Code> opacity.</>],
+        ["Border color / width", <>Default white, <Code>2px</Code>.</>],
+        ["Font family / size", <>Default Arial <Code>16px</Code>.</>],
+        ["Box width / padding", <>Max width <Code>360</Code>; padding <Code>12×10</Code> (per-side overrides available).</>],
+        ["Offsets", <>Overhead: <Code>(0, -8)</Code> above the head. Box: <Code>(0, 16)</Code> above the screen bottom.</>],
+      ]} />
+      <div style={{ marginTop: 14, fontWeight: 700, color: "#fff", fontSize: 14 }}>Themes</div>
+      <DocTable head={["Theme", "Look"]} rows={DIALOGUE_THEMES.map(([t, d]) => [<Code>{t}</Code>, d])} />
+
+      <H2>A dialogue line</H2>
+      <P>Each line is one speech bubble. This is a line in the editor:</P>
+      <div style={{ margin: "14px 0", display: "flex", justifyContent: "center" }}><DialogueLineMock /></div>
+      <DocTable head={["Field", "What it does"]} rows={[
+        ["Speaker", <>Who's talking — a label like <i>Alice</i> mapped to a Blueprint (see Speakers). Empty = narrator.</>],
+        ["Text", <>What they say. Multi-line; supports <Code>{"{var}"}</Code> (speaker's variable) and <Code>{"{Bp.var}"}</Code> (another object's) interpolation.</>],
+        ["wait (delaySec)", "Pause this many seconds before the line appears (stage timing)."],
+        ["emit (emitSignal)", <>Fire a signal the instant the line begins — catch it with <Code>OnSignal</Code> to trigger something (open a door, shake the camera).</>],
+        ["choices", "Turn the line into a branching choice — see below."],
+      ]} />
+
+      <H2>Choices &amp; branching</H2>
+      <P>Add choices to a line and it waits for the player to pick (keys 1–9). Each choice:</P>
+      <DocTable head={["Choice field", "What it does"]} rows={[
+        ["Text", "The option label shown to the player."],
+        ["emit (emitSignal)", <>Signal fired when this option is picked — branch your logic on it with <Code>OnSignal</Code>.</>],
+        ["go to (goToDialogue)", "Jump to another Dialogue asset. Empty = just continue to the next line."],
+      ]} />
+      <Callout tone="tip">Set a <b>Player speaker</b> on the asset to have the player "recite" the choice text as a spoken line before the branch runs.</Callout>
+
+      <H2>Speakers</H2>
+      <P>The <b>Speakers</b> panel maps each speaker label to a Blueprint so the bubble knows where to float and whose variables to read. Per-speaker <b>offset X/Y</b> nudges that character's bubble. No mapping → the bubble falls back to a fixed camera position.</P>
+
+      <H2>Playback &amp; advancing</H2>
+      <DocTable head={["Setting", "What it does"]} rows={[
+        ["Advance action", <>The Input Action that steps to the next line (default <Code>Interact</Code>). The same press also completes the typewriter.</>],
+        ["Typewriter cps", <>Characters revealed per second (default <Code>30</Code>; <Code>0</Code> = instant).</>],
+        ["Auto-advance s", <>Auto-step after N seconds with no input (default <Code>0</Code> = wait for the player).</>],
+        ["Freeze player / NPCs", "Optionally freeze the player and/or NPCs while the conversation runs."],
+      ]} />
+
+      <H2>Writing scripts as plain text</H2>
+      <P>Instead of clicking line-by-line, upload a <Code>.txt</Code> / <Code>.md</Code> / <Code>.dlg</Code> file. The parser turns it into lines and auto-matches speakers to Blueprints (you wire any it can't guess). The grammar:</P>
+      <div style={{ background: "#0f131b", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, padding: "12px 14px", fontFamily: "ui-monospace,monospace", fontSize: 12.5, lineHeight: 1.6, color: "#d4dae6", margin: "12px 0", whiteSpace: "pre-wrap" }}>{`# a comment line is ignored
+Alice: Hey there! [wait 0.5] [emit Wave]
+This continues Alice's line.
+
+Bob: Pick one.
+> Open it   [emit ChoseOpen]
+> Leave     [emit ChoseLeave] -> EndingDialogue`}</div>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "4px 0" }}><Code>Speaker: text</Code> — a line. A blank line ends the block; an un-prefixed next line continues the same speaker.</li>
+        <li style={{ margin: "4px 0" }}><Code>[wait N]</Code> / <Code>[emit Name]</Code> — apply to the line (or the next one if on their own).</li>
+        <li style={{ margin: "4px 0" }}><Code>&gt; Option</Code> — a choice on the line above; <Code>[emit Name]</Code> and <Code>-&gt; OtherDialogue</Code> optional.</li>
+      </ul>
+
+      <H2>The Dialog Flow timeline</H2>
+      <P>The <b>Dialog Flow</b> tab is a grid — <b>columns are chapters</b> (free-form story labels), <b>rows are NPC Blueprints</b>, and each <b>cell is a trigger</b> that says "play this dialogue, on this condition." It's the at-a-glance map of every conversation in the game.</P>
+      <DialogFlowGridMock />
+      <P>Click a cell to edit its trigger:</P>
+      <DocTable head={["Trigger field", "What it does"]} rows={[
+        ["Dialogue", "Which Dialogue asset plays."],
+        ["Kind", <><b>On Interact</b> (player presses the interact action while in range), <b>On Enter Scene</b> (fires when the scene loads), or <b>On Signal</b> (a named signal fires).</>],
+        ["Signal name", <>(On Signal kind) the signal that fires it.</>],
+        ["Interactor / instance", "Limit who can trigger it (e.g. only the player BP), or only a specific placed instance."],
+        ["Interact action", "Which Input Action counts as 'interact' for this trigger."],
+        ["Conditions", <>Extra gates — <Code>var:Player.hp &gt; 0</Code>, <Code>global:Gold &gt;= 100</Code>… ALL must be true.</>],
+        ["Priority", "When several triggers match at once, the highest priority wins."],
+        ["One-shot", "Fire at most once per session (e.g. a first-meeting greeting)."],
+      ]} />
+
+      <H2>Controlling nodes &amp; signals</H2>
+      <DocTable head={["Node", "Type", "What it does"]} rows={[
+        [<Code>PlayDialogue</Code>, "Action", "Play a Dialogue asset right now (its bubble UI). No-op if one's already playing. Optional overrides for display mode / advance action / cps."],
+        [<Code>StopDialogue</Code>, "Action", "Cancel the running dialogue and clear the bubble."],
+        [<Code>IsDialoguePlaying</Code>, "Condition", "True while a conversation is running — gate input or pause logic during dialogue."],
+      ]} />
+      <P>Dialogue also <b>emits signals</b> you catch with <Code>OnSignal</Code>:</P>
+      <DocTable head={["Signal", "When"]} rows={[
+        [<><Code>OnDialogueStart</Code> / <Code>:&lt;name&gt;</Code></>, "A dialogue begins (generic, and per-asset variants)."],
+        [<><Code>OnDialogueEnd</Code> / <Code>:&lt;name&gt;</Code></>, "A dialogue finishes or is stopped."],
+        [<Code>OnDialogueChoice:&lt;line&gt;:&lt;choice&gt;</Code>, "A specific choice is picked (plus the choice's own emit signal)."],
+        ["a line's emit signal", "The instant that line begins (set per line)."],
+      ]} />
+      <Callout>For branching, the simplest pattern is: give each choice an <b>emit</b> signal (e.g. <Code>ChoseOpen</Code>), then <i>On Signal "ChoseOpen" → do the thing</i>. Or use a choice's <b>go to</b> to chain straight into another dialogue.</Callout>
+    </DocScroll>
+  );
+}
+
 /** Placeholder for tabs whose content we'll fill in next. */
 function ComingSoon({ title }: { title: string }) {
   return (
@@ -908,10 +1195,12 @@ export function Documentation({ onClose }: { onClose: () => void }) {
       </div>
       <div style={{ flex: 1, overflow: "hidden" }}>
         {tab === "nodes" ? <NodesDoc />
+          : tab === "logicSheet" ? <LogicSheetDoc />
           : tab === "stateMachine" ? <StateMachineDoc />
           : tab === "components" ? <ComponentsDoc />
           : tab === "items" ? <ItemsDoc />
           : tab === "ui" ? <UIDoc />
+          : tab === "dialogue" ? <DialogueDoc />
           : <ComingSoon title={DOC_TABS.find((t) => t.id === tab)!.label} />}
       </div>
     </div>
