@@ -86,8 +86,33 @@ export function BlueprintIdentitySection({ bp }: { bp: BlueprintDef }) {
           onChange={(e) => update(bp.id, { cullMode: e.target.value as "never" | "throttled" | "freeze" })}
         >
           <option value="never">Never (always full update)</option>
-          <option value="throttled">Throttled (10Hz off-screen — living world)</option>
+          <option value="throttled">Throttled (off-screen — living world)</option>
           <option value="freeze">Freeze (skip off-screen — swarms)</option>
+        </select>
+      </div>
+      {bp.cullMode === "throttled" && (
+        <div className="field" title="Off-screen tick rate when Culling is Throttled. Higher = smoother movement when an NPC walks back on-screen, but a smaller CPU win off-screen. Lower = bigger win, choppier wake-up. Only applies off-screen; on-screen always runs full rate.">
+          <label>Off-screen Rate</label>
+          <select
+            value={String(bp.cullThrottleHz ?? 10)}
+            onChange={(e) => update(bp.id, { cullThrottleHz: Number(e.target.value) })}
+          >
+            <option value="10">10 Hz (biggest win — default)</option>
+            <option value="20">20 Hz</option>
+            <option value="30">30 Hz (smoothest wake-up)</option>
+          </select>
+        </div>
+      )}
+      <div className="field" title="How often instances of this BP RE-DECIDE — re-evaluating their State Machine and Logic Sheet (OnTick + conditions). Movement, animation playback and overlay sync ALWAYS run every frame, so motion stays smooth — only the thinking is throttled. Use for big background swarms (grazing animals, ambient crowds) where reacting a few times a second is plenty. Reaction latency ≈ the rate. NOT for combat actors that rely on frame-signals / frame-motions / per-frame triggers — keep those at 60Hz. Default 60Hz = decide every frame.">
+        <label>Decision Rate</label>
+        <select
+          value={String(bp.decisionTickRate ?? 1)}
+          onChange={(e) => update(bp.id, { decisionTickRate: Number(e.target.value) })}
+        >
+          <option value="1">60 Hz (every frame — default)</option>
+          <option value="2">30 Hz (decide every 2nd frame)</option>
+          <option value="3">20 Hz (decide every 3rd frame)</option>
+          <option value="6">10 Hz (background swarms)</option>
         </select>
       </div>
       <div className="field" title="Skip CollisionScan's broad-phase pair detection for this BP's instances. HUGE perf win when many NPCs cluster (1500 NPCs in one spot ≈ 1M pair checks per frame normally; with this on, zero). By DEFAULT this disables OnCollide / OnOverlap events on these sprites. Use the 'Detect tags' field below to whitelist specific tags (e.g. 'player') whose pairs should STILL be scanned — typical swarm setup is Skip ON + Detect = 'player', which gives perf for swarm-vs-swarm while keeping swarm-vs-player events alive.">
@@ -467,6 +492,31 @@ export function GenericComponentCard({
             // eslint-disable-next-line eqeqeq
             if (depVal != p.dependsOn.value) return null;
           }
+          if (p.comingSoon) {
+            return (
+              <Fragment key={p.key}>
+                <div style={{ opacity: 0.45, pointerEvents: "none" }} title={p.comingSoon}>
+                  <ParamField
+                    paramKey={p.key}
+                    label={p.label}
+                    type={p.type}
+                    options={p.options}
+                    value={cfg[p.key] ?? p.default}
+                    sprites={sprites}
+                    currentSpriteId={String(cfg.spriteId ?? cfg.maskSpriteId ?? hostSpriteId ?? "")}
+                    variables={variables}
+                    uiWidgets={uiWidgets}
+                    inputActions={inputActions}
+                    sceneLayers={sceneLayers}
+                    onChange={() => {}}
+                  />
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-dim)", fontStyle: "italic", padding: "0 4px 4px 104px" }}>
+                  🔒 {p.comingSoon}
+                </div>
+              </Fragment>
+            );
+          }
           return (
             <Fragment key={p.key}>
               <ParamField
@@ -492,7 +542,7 @@ export function GenericComponentCard({
   );
 }
 
-function ParamField({
+export function ParamField({
   paramKey, label, type, options, value, sprites, currentSpriteId, variables, uiWidgets, inputActions, sceneLayers, onChange,
 }: {
   paramKey: string;

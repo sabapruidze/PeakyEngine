@@ -44,6 +44,10 @@ export interface BehaviorParamMeta {
    *  also has an AIBrain — because the brain writes this value every tick
    *  (its Chase / Patrol Speed), so editing it here has no effect on an AI NPC. */
   aiOverridden?: boolean;
+  /** When set, the field renders greyed-out and non-interactive with this note
+   *  beneath it — the param exists in the schema but its runtime behavior isn't
+   *  wired up yet (placeholder for planned work). */
+  comingSoon?: string;
 }
 
 export const BEHAVIOR_PARAMS: Record<BehaviorKind, BehaviorParamMeta[]> = {
@@ -524,7 +528,7 @@ export const BEHAVIOR_PARAMS: Record<BehaviorKind, BehaviorParamMeta[]> = {
     ]},
     // Surface separationAvoid — runtime/WRITABLE_PARAMS expose it but the
     // inspector was missing the row. (audit HIGH #10, #30, #35)
-    { key: "separationAvoid",   label: "Separation Avoid (queue vs slide)", default: 0, type: "bool" },
+    { key: "separationAvoid",   label: "Separation Avoid (queue vs slide)", default: 0, type: "bool", comingSoon: "Not built yet — no effect. Planned: queue (stop behind a blocking sibling) vs slide (steer around it)." },
   ],
   TiledBackground: [
     { key: "spriteId",         label: "Sprite",                                  default: "", type: "spriteRef" },

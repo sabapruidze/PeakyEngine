@@ -3079,7 +3079,7 @@ function ensureBigTileFrames(
     const h = bt.h * sTileH;
     const canvasTex = scene.textures.createCanvas(key, w, h);
     if (!canvasTex) continue;
-    const src = tex.getSourceImage(0) as HTMLImageElement | HTMLCanvasElement;
+    const src = tex.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
     const ctx = canvasTex.getContext();
     // Enumerate cells: explicit list for sparse, full bbox otherwise.
     const cells: Array<{ c: number; r: number }> = isSparse
@@ -3124,7 +3124,7 @@ function ensureAnimatedFrameComposites(
   const sSpacingY = src?.spacingY ?? spacingY;
   const tex = scene.textures.get(srcKey);
   if (!tex || tex.key === "__MISSING") return;
-  const srcImg = tex.getSourceImage(0) as HTMLImageElement | HTMLCanvasElement;
+  const srcImg = tex.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
     if (typeof f === "number") continue;
@@ -3229,8 +3229,12 @@ function ensureTilesetFrames(
   spacingX: number, spacingY: number,
 ): void {
   const tex = scene.textures.get(textureKey);
-  if (!tex || tex.key === "__MISSING") return;
-  const src = tex.getSourceImage(0) as HTMLImageElement | { width: number; height: number };
+  // Bail safely if the texture has no usable source (empty/oversized canvas).
+  if (!tex || tex.key === "__MISSING" || !tex.has("__BASE")) return;
+  // Use the BASE source — passing `0` makes Phaser 3.90 treat it as a frame
+  // NAME, and once tile_<i> frames exist it warns "has no frame 0" on every
+  // call (1000s of console spam). No-arg = __BASE, the full atlas image.
+  const src = tex.getSourceImage() as HTMLImageElement | { width: number; height: number };
   const texW = (src as HTMLImageElement).width ?? 0;
   const texH = (src as HTMLImageElement).height ?? 0;
   if (texW <= 0 || texH <= 0) return;
@@ -3275,14 +3279,21 @@ function ensureCombinedTileset(
   const combinedRows = Math.ceil(total / combinedCols);
   const W = combinedCols * cellW;
   const H = combinedRows * cellH;
+  // Browsers cap canvas/texture size (~16384px). Past that createCanvas yields
+  // an empty texture that crashes the frame setup downstream. Bail with a clear
+  // message so the author can split/shrink tilesets instead of black-screening.
+  if (W > 16384 || H > 16384) {
+    console.warn(`[Peaky] Combined tileset texture is ${W}x${H}px — exceeds the browser canvas limit (16384). Use fewer / smaller tilesets on this map (or lower tile scale). Tiles from this set won't render.`);
+    return null;
+  }
   const canvasTex = scene.textures.createCanvas(cacheKey, W, H);
   if (!canvasTex) return null;
   const ctx = canvasTex.getContext();
   ctx.imageSmoothingEnabled = false;
   for (const s of slots) {
     const tex = scene.textures.get(s.textureKey);
-    if (!tex || tex.key === "__MISSING") continue;
-    const src = tex.getSourceImage(0) as HTMLImageElement | HTMLCanvasElement;
+    if (!tex || tex.key === "__MISSING" || !tex.has("__BASE")) continue;
+    const src = tex.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
     const count = Math.max(1, s.cols) * Math.max(1, s.rows);
     for (let i = 0; i < count; i++) {
       const g = s.firstgid + i;
@@ -3335,7 +3346,7 @@ export function ensureExtrudedTileset(
   }
   const srcTex = scene.textures.get(textureKey);
   if (!srcTex || srcTex.key === "__MISSING") return fallback;
-  const srcImg = srcTex.getSourceImage(0) as HTMLImageElement | HTMLCanvasElement | { width: number; height: number };
+  const srcImg = srcTex.getSourceImage() as HTMLImageElement | HTMLCanvasElement | { width: number; height: number };
   const srcW = (srcImg as HTMLImageElement).width ?? 0;
   const srcH = (srcImg as HTMLImageElement).height ?? 0;
   if (srcW <= 0 || srcH <= 0) return fallback;

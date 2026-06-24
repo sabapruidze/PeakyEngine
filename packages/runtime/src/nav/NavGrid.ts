@@ -14,6 +14,7 @@ export interface NavMeshData {
   walkable: number[];
   obstacles: { id: string; points: { x: number; y: number }[]; tags: string[] }[];
   waypoints: { id: string; x: number; y: number; name?: string; tags: string[]; waitSec?: number; signalOnArrive?: string; srcMap?: string; srcX?: number; srcY?: number; setStateAny?: string; setStates?: { bp: string; state: string }[]; singleUse?: boolean }[];
+  regionLocked?: boolean;
 }
 
 export interface NavGrid {
@@ -28,6 +29,15 @@ export interface NavGrid {
   /** Kept for runtime queries (tracer line-of-sight / detection by tag). */
   obstacles: NavMeshData["obstacles"];
   waypoints: NavMeshData["waypoints"];
+  /** Connected-component label per cell (-1 = blocked). Two walkable cells share
+   *  a region id iff A* can path between them (same 8-conn, no-corner-cut rule),
+   *  so "region-locked patrol" can scan only points an NPC can actually reach. */
+  region: Int32Array;
+  /** Waypoint id → its region (precomputed once). Cheap lookup for the filter. */
+  pointRegion: Map<string, number>;
+  /** Scene-wide "area filter" toggle (from the nav-mesh menu). When on, patrol
+   *  scans are restricted to the NPC's own connected region. */
+  regionLocked: boolean;
 }
 
 function pointInPoly(x: number, y: number, poly: { x: number; y: number }[]): boolean {
@@ -55,7 +65,44 @@ export function buildNavGrid(nm: NavMeshData): NavGrid {
       if (pointInPoly(c * cellSize + cellSize / 2, r * cellSize + cellSize / 2, o.points)) blocked[r * cols + c] = 1;
     }
   }
-  return { cellSize, cols, rows, blocked, terrain, obstacles: nm.obstacles, waypoints: nm.waypoints };
+  // Label connected components (flood fill). 8-connected with NO corner-cutting,
+  // so two cells share a region exactly when A* can route between them. One pass,
+  // O(cells), at scene load.
+  const region = new Int32Array(cols * rows).fill(-1);
+  const NB = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const stack: number[] = [];
+  let nextRegion = 0;
+  for (let s = 0; s < cols * rows; s++) {
+    if (blocked[s] || region[s] >= 0) continue;
+    const id = nextRegion++;
+    region[s] = id;
+    stack.length = 0; stack.push(s);
+    while (stack.length) {
+      const cur = stack.pop()!;
+      const cc = cur % cols, cr = (cur - cc) / cols;
+      for (const [dc, dr] of NB) {
+        const nc = cc + dc, nr = cr + dr;
+        if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue;
+        const ni = nr * cols + nc;
+        if (blocked[ni] || region[ni] >= 0) continue;
+        // Diagonal: only connect if both orthogonal cells are open (matches A*).
+        if (dc !== 0 && dr !== 0 && (blocked[cr * cols + nc] || blocked[nr * cols + cc])) continue;
+        region[ni] = id; stack.push(ni);
+      }
+    }
+  }
+  const grid: NavGrid = { cellSize, cols, rows, blocked, terrain, obstacles: nm.obstacles, waypoints: nm.waypoints, region, pointRegion: new Map(), regionLocked: !!nm.regionLocked };
+  // Precompute each waypoint's region once so the patrol filter is O(1)/point.
+  for (const w of nm.waypoints) if (w.id) grid.pointRegion.set(w.id, regionAt(grid, w.x, w.y));
+  return grid;
+}
+
+/** Region id of the walkable cell nearest to (x, y), or -1 if the grid has no
+ *  walkable cell. Used by region-locked patrol to compare an NPC's area to a
+ *  point's area. */
+export function regionAt(g: NavGrid, x: number, y: number): number {
+  const snap = nearestWalkable(g, x, y);
+  return snap ? g.region[snap.r * g.cols + snap.c] : -1;
 }
 
 /** Segment (a→b) vs segment (c→d) intersection test. */
@@ -156,6 +203,28 @@ function lineOfSight(g: NavGrid, c0: number, r0: number, c1: number, r1: number)
 
 const SQRT2 = Math.SQRT2;
 
+// A* scratch, allocated ONCE and reused across every findPath call. The old code
+// did `new Float64Array(cols*rows)` ×2 PER call + a full `.fill(Infinity)` — tens
+// of MB of garbage per pathfind on a large grid, so hundreds of NPCs re-pathing
+// spawned GC pauses (the periodic frame spike that scaled with NPC count). The
+// `_stamp` generation marks which cells hold valid data THIS run: a cell whose
+// stamp != the current gen reads as Infinity / unset, so we neither allocate nor
+// clear per call. Grown on demand; never shrunk.
+let _aStarSize = 0;
+let _gScore = new Float64Array(0);
+let _fScore = new Float64Array(0);
+let _came = new Int32Array(0);
+let _stamp = new Int32Array(0);
+let _aStarGen = 0;
+function ensureAStarScratch(n: number): void {
+  if (n <= _aStarSize) return;
+  _aStarSize = n;
+  _gScore = new Float64Array(n);
+  _fScore = new Float64Array(n);
+  _came = new Int32Array(n);
+  _stamp = new Int32Array(n); // 0 = never touched; gen counter starts at 1
+}
+
 /**
  * A* from world (sx,sy) → (gx,gy). 8-directional, octile heuristic, with a
  * line-of-sight string-pull so the returned path is a short list of world
@@ -170,22 +239,34 @@ export function findPath(g: NavGrid, sx: number, sy: number, gx: number, gy: num
   const startI = idx(start.c, start.r), goalI = idx(goal.c, goal.r);
   if (startI === goalI) return [{ x: gx, y: gy }];
 
+  // Straight-shot: if nothing blocks the line from start to goal, walk straight
+  // and skip A* entirely. Open fields (grazing) hit this nearly every hop, so a
+  // wave of NPCs re-pathing in one frame costs a cheap line-trace each instead
+  // of a full A* search — this is the ~50% `findPath` cost the profile flagged.
+  if (lineOfSight(g, start.c, start.r, goal.c, goal.r)) return [{ x: gx, y: gy }];
+
+  const N = cols * rows;
+  ensureAStarScratch(N);
+  // Keep gen as an int32 (matches the Int32Array stamp) and never 0 (the array's
+  // zero-init value), so stale stamps can never alias the current generation.
+  _aStarGen = (_aStarGen + 1) | 0;
+  if (_aStarGen === 0) _aStarGen = 1;
+  const gen = _aStarGen;
+  const gScore = _gScore, fScore = _fScore, came = _came, stamp = _stamp;
   const open = new Set<number>([startI]);
-  const came = new Map<number, number>();
-  const gScore = new Float64Array(cols * rows).fill(Infinity);
-  const fScore = new Float64Array(cols * rows).fill(Infinity);
-  gScore[startI] = 0;
+  stamp[startI] = gen; gScore[startI] = 0; came[startI] = -1;
   const h = (c: number, r: number) => { const dc = Math.abs(c - goal.c), dr = Math.abs(r - goal.r); return (dc + dr) + (SQRT2 - 2) * Math.min(dc, dr); };
   fScore[startI] = h(start.c, start.r);
 
   const NB = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-  let guard = cols * rows + 1;
+  let guard = N + 1;
   while (open.size > 0 && guard-- > 0) {
-    // Lowest fScore in the open set.
+    // Lowest fScore in the open set (every member was stamped this gen on insert).
     let cur = -1, best = Infinity;
     for (const i of open) if (fScore[i] < best) { best = fScore[i]; cur = i; }
     if (cur === goalI) break;
     open.delete(cur);
+    const gCur = gScore[cur];
     const cc = cur % cols, cr = (cur - cc) / cols;
     for (const [dc, dr] of NB) {
       const nc = cc + dc, nr = cr + dr;
@@ -194,21 +275,22 @@ export function findPath(g: NavGrid, sx: number, sy: number, gx: number, gy: num
       if (dc !== 0 && dr !== 0 && (!walkableCell(g, cc + dc, cr) || !walkableCell(g, cc, cr + dr))) continue;
       const ni = idx(nc, nr);
       const step = dc !== 0 && dr !== 0 ? SQRT2 : 1;
-      const tentative = gScore[cur] + step;
-      if (tentative < gScore[ni]) {
-        came.set(ni, cur);
+      const tentative = gCur + step;
+      if (stamp[ni] !== gen || tentative < gScore[ni]) {
+        stamp[ni] = gen;
+        came[ni] = cur;
         gScore[ni] = tentative;
         fScore[ni] = tentative + h(nc, nr);
         open.add(ni);
       }
     }
   }
-  if (!came.has(goalI) && startI !== goalI) return null;
+  if (stamp[goalI] !== gen) return null;
 
   // Reconstruct cell path.
   const cells: { c: number; r: number }[] = [];
-  let n: number | undefined = goalI;
-  while (n !== undefined) { const c = n % cols; cells.push({ c, r: (n - c) / cols }); n = came.get(n); }
+  let n = goalI;
+  while (n !== -1) { const c = n % cols; cells.push({ c, r: (n - c) / cols }); n = came[n]; }
   cells.reverse();
 
   // String-pull: keep a point only when LOS to the next-next breaks.

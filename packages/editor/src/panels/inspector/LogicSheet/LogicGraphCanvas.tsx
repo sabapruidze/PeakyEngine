@@ -440,6 +440,19 @@ export function nodeShape(node: LogicGraphNode, varTypes?: Map<string, "number" 
         outData: [],
       };
     }
+    if (node.type === "OnEveryNSeconds") {
+      // Interval is wireable (number pin) + accepts inline expressions
+      // (random(2,5) / var:…). Resolved ONCE at subscribe time per sprite, so a
+      // random() gives each instance its own cadence.
+      return {
+        label: node.type,
+        params: node.params,
+        inExec: [],
+        outExec: [{ pin: "exec" }],
+        inData: [{ pin: "interval", type: "number", label: "interval" }],
+        outData: [],
+      };
+    }
     return {
       label: node.type,
       params: node.params,
@@ -1804,7 +1817,16 @@ function ParamField({
     // Each other object also exposes its built-in transform fields (the runtime
     // resolves `var:<Object>.<field>` for these), shown before its user vars.
     const XFORM = ["x", "y", "vx", "vy", "angle", "scale", "scaleX", "scaleY", "alpha", "uid"];
-    for (const [obj, toks] of byObj) {
+    // Every blueprint is referenceable — even one with NO user variables (a
+    // blank/Empty BP) still exposes x/y and the other built-in transform fields.
+    // Union the var-derived objects with the FULL blueprint list so a fresh
+    // Empty BP isn't invisible in the picker. The host is shown as "This object"
+    // above, so skip it here.
+    const objNames = [...new Set<string>([...byObj.keys(), ...blueprintNames])]
+      .filter((n) => n && n !== hostBpName)
+      .sort((a, b) => a.localeCompare(b));
+    for (const obj of objNames) {
+      const toks = byObj.get(obj) ?? [];
       const builtins = XFORM.map((f) => ({ token: `var:${obj}.${f}`, hint: `${obj}'s ${f}` }));
       const ips = (imagePointsByBp[obj] ?? []).flatMap((pt) => [
         { token: `var:${obj}.IP.${pt}.x`, hint: `${obj}'s image point ${pt} x` },

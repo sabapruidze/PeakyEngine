@@ -3,7 +3,7 @@ import { getSpritesByTag, addSpriteTag, removeSpriteTag, getSpritesByName, reind
 import type { Condition, StateAction } from "@peaky/shared";
 import { getInputActions, pointerOverUiBlocker } from "../input/InputActions";
 import { Logger } from "../Logger";
-import { findPath } from "../nav/NavGrid";
+import { findPath, regionAt } from "../nav/NavGrid";
 import { isNavPointAvailable, claimNavPoint } from "../nav/navPoints";
 import { showOnScreenPrint } from "../OnScreenPrint";
 import { findTracer } from "../behaviors/Tracer";
@@ -3359,25 +3359,30 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
     }
     case "PatrolNavPoints": {
       const mt = sprite.findBehaviorByKind("MoveTo") as
-        | { mode: string; speed: number; enabled: boolean; navWant?: string; navFallbackState?: string; navWaiting?: boolean; navPath: { x: number; y: number }[] | null; navPatrol: { points: { x: number; y: number; name?: string; tags?: string[]; waitSec?: number; signalOnArrive?: string }[]; idx: number; mode: string; dir: number } | null }
+        | { mode: string; speed: number; enabled: boolean; navWant?: string; navFallbackState?: string; navWaiting?: boolean; navPath: { x: number; y: number }[] | null; navPatrol: { points: { id?: string; x: number; y: number; name?: string; tags?: string[]; waitSec?: number; signalOnArrive?: string; srcMap?: string; srcX?: number; srcY?: number; setStateAny?: string; setStates?: { bp: string; state: string }[]; singleUse?: boolean }[]; idx: number; mode: string; dir: number } | null }
         | undefined;
       if (!mt) { Logger.log({ level: "warn", source: sourceLabel ?? a.kind, message: "PatrolNavPoints: sprite has no MoveTo component." }); break; }
       const grid = sprite.scene?.data?.get("peaky.navGrid") as import("../nav/NavGrid").NavGrid | undefined;
       if (!grid) { Logger.log({ level: "warn", source: sourceLabel ?? a.kind, message: "PatrolNavPoints: no nav mesh painted in this scene." }); break; }
       const tag = strOr(cfg.tag, "", sprite).trim();
-      // Keep ALL matching points in the patrol (availability is re-checked on each
-      // advance) so the route still knows about a bush that's currently taken/
-      // mined and can return to it once it frees up.
-      const pts = grid.waypoints.filter((w) => !tag || (w.tags ?? []).includes(tag) || w.name === tag).map((w) => ({ id: w.id, x: w.x, y: w.y, name: w.name, tags: w.tags, waitSec: w.waitSec, signalOnArrive: w.signalOnArrive, srcMap: w.srcMap, srcX: w.srcX, srcY: w.srcY, setStateAny: w.setStateAny, setStates: w.setStates, singleUse: w.singleUse }));
+      let pts = grid.waypoints.filter((w) => !tag || (w.tags ?? []).includes(tag) || w.name === tag).map((w) => ({ id: w.id, x: w.x, y: w.y, name: w.name, tags: w.tags, waitSec: w.waitSec, signalOnArrive: w.signalOnArrive, srcMap: w.srcMap, srcX: w.srcX, srcY: w.srcY, setStateAny: w.setStateAny, setStates: w.setStates, singleUse: w.singleUse }));
       if (pts.length === 0) { sprite.events.emit("OnNavFailed"); Logger.log({ level: "warn", source: sourceLabel ?? a.kind, message: `PatrolNavPoints: no waypoints tagged "${tag}".` }); break; }
       const modeStr = strOr(cfg.mode, "loop", sprite);
       const mode = (modeStr === "pingpong" || modeStr === "random" || modeStr === "nearest") ? modeStr : "loop";
       const s = numOr(cfg.speed, 0, sprite);
       if (s > 0) mt.speed = s;
       const fallback = strOr(cfg.fallback, "", sprite).trim();
-      // Start at the nearest AVAILABLE point (claim it so same-frame peers pick a
-      // different one — prevents stacking when bushes < sheep).
       const ox = sprite.gameObject.x, oy = sprite.gameObject.y;
+      if (grid.regionLocked && grid.pointRegion.size > 0) {
+        // Keep only points an NPC in THIS connected walkable area can actually
+        // reach — kills doomed A* searches toward geometrically-near but
+        // unreachable points in disconnected areas (the patrol "wave" spike).
+        const myRegion = regionAt(grid, ox, oy);
+        if (myRegion >= 0) {
+          const same = pts.filter((p) => !p.id || grid.pointRegion.get(p.id) === myRegion);
+          if (same.length > 0) pts = same;
+        }
+      }
       let startIdx = -1, bd = Infinity;
       for (let k = 0; k < pts.length; k++) {
         if (!isNavPointAvailable(sprite.scene, pts[k], sprite.uid)) continue;
@@ -3390,11 +3395,21 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       mt.mode = "position";
       mt.enabled = true;
       if (startIdx >= 0) {
-        mt.navPath = findPath(grid, ox, oy, pts[startIdx].x, pts[startIdx].y);
-        if (pts[startIdx].id) claimNavPoint(sprite.scene, pts[startIdx].id, sprite.uid);
-        mt.navWaiting = false;
+        const initPath = findPath(grid, ox, oy, pts[startIdx].x, pts[startIdx].y);
+        if (initPath) {
+          mt.navPath = initPath;
+          if (pts[startIdx].id) claimNavPoint(sprite.scene, pts[startIdx].id, sprite.uid);
+          mt.navWaiting = false;
+        } else {
+          // Initial path failed (sheep spawned at scene start before position
+          // settles). PARK so MoveTo's wait loop re-paths a frame later.
+          mt.navPath = null;
+          mt.navWaiting = true;
+          sprite.events.emit("OnNavFailed");
+          const anim = sprite.findBehaviorByKind("StateMachine") as { forcedState?: string } | undefined;
+          if (anim && fallback) anim.forcedState = fallback;
+        }
       } else {
-        // Every point taken / mined right now → park idle; MoveTo resumes when one frees.
         mt.navPath = null;
         mt.navWaiting = true;
         sprite.events.emit("OnNavFailed");

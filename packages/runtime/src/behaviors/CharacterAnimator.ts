@@ -646,6 +646,14 @@ export class CharacterAnimator extends Behavior {
     // already scene-timeScale-adjusted by Sprite.tick, so pausing the
     // game freezes combo timers too.
     this._simTime += _delta / 1000;
+    // Decision throttle — on non-decision frames (BP decisionTickRate > 1, big
+    // swarms) skip state RE-SELECTION entirely. SpriteRenderer keeps stepping
+    // the current animation's frames and MoveTo keeps moving, so motion stays
+    // smooth; only the "which state should I be in" choice is throttled. NOTE:
+    // frame-signals / frame-motions and per-tick freeze/ignore-input effects are
+    // also evaluated at the reduced rate — intended for simple background NPCs,
+    // not combat actors (leave their decisionTickRate at 1).
+    if (!this.sprite._decisionFrame) return;
     // Default off every tick; recomputed below. No active state (or no sprite)
     // ⇒ never locked, so the sprite is free to face normally.
     this.facingLocked = false;
@@ -661,15 +669,27 @@ export class CharacterAnimator extends Behavior {
     if (this.forcedState) {
       const fs = this.findState(this.forcedState);
       if (fs) {
-        if (this._activeStateName !== fs.name) {
-          this.previousState = this._activeStateName;
-          this.previousAnim = (sr as { currentAnimation?: string }).currentAnimation ?? "";
-          this.enterState(fs, sr);
+        // A ONE-SHOT arrival anim ("eat", "mine") auto-releases once it has
+        // played through, so the NPC falls to idle for the rest of the wait
+        // instead of freezing on its last frame. Looping states ("sleep") and
+        // holdOnFinish states still pin. Clearing the pin here drops into the
+        // normal one-shot release path below, which picks idle this same tick.
+        const srFinished = (sr as { finishedEmitted?: boolean }).finishedEmitted === true;
+        const playedOut = this._activeStateName === fs.name && this._phase === "main"
+          && srFinished && this.isMainOneShot(fs, sr) && !fs.holdOnFinish;
+        if (playedOut) {
+          this.forcedState = "";
+        } else {
+          if (this._activeStateName !== fs.name) {
+            this.previousState = this._activeStateName;
+            this.previousAnim = (sr as { currentAnimation?: string }).currentAnimation ?? "";
+            this.enterState(fs, sr);
+          }
+          this.currentState = fs.name;
+          this.applyAdvancedPerTick(fs, sr);
+          this.drawDebug(sr as { currentAnimation: string; currentFrameIdx?: number });
+          return;
         }
-        this.currentState = fs.name;
-        this.applyAdvancedPerTick(fs, sr);
-        this.drawDebug(sr as { currentAnimation: string; currentFrameIdx?: number });
-        return;
       }
     }
 

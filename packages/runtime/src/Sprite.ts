@@ -719,6 +719,22 @@ export class Sprite {
    *  entirely (max savings, NPC literally pauses in place). Set by
    *  spawnFromBlueprint from the BP's cullMode field. */
   cullMode: "never" | "throttled" | "freeze" = "never";
+  /** Frames between "decision" passes. 1 = decide every frame (default). 6 ≈
+   *  10Hz at 60fps. Throttles ONLY the expensive thinking — the StateMachine's
+   *  state SELECTION, the Logic Sheet's per-frame OnTick + event eval — while
+   *  movement, animation playback and overlay sync keep running every frame, so
+   *  motion stays smooth. For big background swarms whose logic only needs to
+   *  re-decide a few times a second. Set from the BP's decisionTickRate field. */
+  decisionTickRate = 1;
+  /** Off-screen "throttled" cull rate, in FRAMES between ticks. Default
+   *  CULL_THROTTLE_FRAMES (6 = 10Hz). 2 = 30Hz, 3 = 20Hz. Only used when
+   *  cullMode === "throttled". Set from the BP's cullThrottleHz field. */
+  cullThrottleFrames = CULL_THROTTLE_FRAMES;
+  /** True on frames where decisions run this tick (driven by decisionTickRate,
+   *  staggered by uid). CharacterAnimator's state selection + Sprite's event
+   *  passes read it; MoveTo / SpriteRenderer ignore it and stay smooth. */
+  _decisionFrame = true;
+  private _decisionCounter = 0;
   /** When true, this sprite is EXCLUDED from CollisionScan's broad-phase
    *  pair detection. Use for swarm enemies that don't need OnCollide /
    *  OnOverlap events — gameplay damage comes from tracers, Damageable
@@ -809,7 +825,7 @@ export class Sprite {
         const dy = Math.abs(this.gameObject.y - wv.centerY);
         if (dx > halfW || dy > halfH) {
           this._cullFrame += 1;
-          if (((this._cullFrame + this.uid) % CULL_THROTTLE_FRAMES) !== 0) return;
+          if (((this._cullFrame + this.uid) % this.cullThrottleFrames) !== 0) return;
         }
       }
     }
@@ -904,6 +920,14 @@ export class Sprite {
       }
     }
 
+    // Decision throttle — decide whether the EXPENSIVE thinking runs this frame
+    // (StateMachine selection + Logic Sheet OnTick/event eval). Staggered by uid
+    // so a swarm's decision frames spread across the throttle window instead of
+    // all landing together. Movement / animation / overlay sync below ignore
+    // this and run every frame, so a throttled NPC still moves smoothly.
+    this._decisionFrame = this.decisionTickRate <= 1
+      || (((this._decisionCounter++) + this.uid) % this.decisionTickRate) === 0;
+
     // 1. Behaviors set velocity, emit OnJump on jump frames, etc.
     //
     // When the scene is paused (timeScale === 0 → scaledDelta === 0), skip
@@ -944,8 +968,10 @@ export class Sprite {
     // behaviors update so listeners observe this frame's fresh state
     // (position, velocity, animator state, etc.) instead of last frame's.
     // Skipped during pause — gameplay tick triggers shouldn't fire while
-    // the world is frozen, mirroring `b.update` gating above.
-    if (!paused) this.events.emit("_tick");
+    // the world is frozen, mirroring `b.update` gating above. Also gated by
+    // the decision throttle so OnTick logic on a throttled swarm fires at the
+    // reduced rate, not 60Hz.
+    if (!paused && this._decisionFrame) this.events.emit("_tick");
 
     // Squash/stretch is applied EXCLUSIVELY through the SpriteRenderer
     // overlay (see SpriteRenderer.applyFrame). We deliberately do NOT
@@ -999,8 +1025,10 @@ export class Sprite {
     this.drainQueue();
     if (this.destroyed) return;
 
-    // 3. Walk the event tree (Construct-3 semantics).
-    this.processEvents(this.events_list);
+    // 3. Walk the event tree (Construct-3 semantics). Gated by the decision
+    //    throttle — a throttled swarm re-evaluates its conditions at the
+    //    reduced rate, not every frame.
+    if (this._decisionFrame) this.processEvents(this.events_list);
 
     // 4. Drop unconsumed signals so they don't leak into next frame.
     //    Skip when this sprite shares its bus (multi-mode UI children) —

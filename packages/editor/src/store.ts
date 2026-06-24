@@ -347,6 +347,7 @@ interface EditorState {
    *  Keeps the painted mask for the overlapping region. */
   setNavSize: (sceneId: string, width: number, height: number) => void;
   setNavDebug: (sceneId: string, on: boolean) => void;
+  setNavRegionLocked: (sceneId: string, on: boolean) => void;
   addNavObstacle: (sceneId: string, points: { x: number; y: number }[], tags?: string[]) => string;
   updateNavObstacle: (sceneId: string, obstacleId: string, patch: Partial<NavObstacle>) => void;
   removeNavObstacle: (sceneId: string, obstacleId: string) => void;
@@ -4591,6 +4592,14 @@ export const useEditor = create<EditorState>((set, get) => ({
       project: {
         ...state.project,
         scenes: state.project.scenes.map((sc) => (sc.id !== sceneId || !sc.navMesh) ? sc : { ...sc, navMesh: { ...sc.navMesh, debug: on || undefined } }),
+      },
+    })),
+
+  setNavRegionLocked: (sceneId, on) =>
+    set((state) => ({
+      project: {
+        ...state.project,
+        scenes: state.project.scenes.map((sc) => (sc.id !== sceneId || !sc.navMesh) ? sc : { ...sc, navMesh: { ...sc.navMesh, regionLocked: on || undefined } }),
       },
     })),
 

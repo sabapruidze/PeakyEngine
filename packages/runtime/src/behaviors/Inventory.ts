@@ -101,41 +101,44 @@ export class Inventory extends Behavior {
   update(): void {
     // Wait until the item catalog is on scene.data (first tick after spawn).
     if (!this.sprite.scene?.data?.get("peaky.itemMeta")) return;
-    if (!this._synced) {
-      this._synced = true;
-      // First tick: restore THIS inventory's own persisted bag — NOT the shared
-      // per-item globals, which used to make every inventory converge to the
-      // union of all items (the cross-contamination bug).
-      if (this.persistKey) {
-        const snap = persistentState().inventories[this.persistKey];
-        if (snap) {
-          this.slots = snap.map((s) => ({ itemId: String(s.itemId ?? ""), qty: Math.max(0, Math.floor(Number(s.qty) || 0)) }));
-          this.normalize();
-        }
-        // Sync HUD globals to the (restored) bag, and seed the snapshot.
-        const seen = new Set<string>();
-        for (const s of this.slots) if (s.itemId && !seen.has(s.itemId)) { seen.add(s.itemId); this.mirrorOut(s.itemId); }
-        this.saveSnapshot();
-      }
-      return;
+    // Everything below is one-time per instance; after sync we do nothing per
+    // tick. (The old per-tick saveSnapshot was O(slots) PER INSTANCE every frame
+    // — at 500 NPCs × a 2000-slot bag that's millions of copies a frame. Saves
+    // now happen on mutation via mirrorOut, which is enough.)
+    if (this._synced) return;
+    this._synced = true;
+    if (!this.persistKey) return;
+    // SHARED LIVE BAG: every instance with the SAME persistKey points its `slots`
+    // at ONE array in scene.data — so all NPCs add to the same bag and one widget
+    // shows the union. (A blank persistKey stays per-instance + scene-local.) The
+    // shared array is seeded ONCE per scene from the cross-scene snapshot; on a
+    // scene change it's gone but the snapshot persists, so the next scene reseeds.
+    let shared = this.sprite.scene.data.get("peaky.sharedBags") as Map<string, InventorySlot[]> | undefined;
+    if (!shared) { shared = new Map(); this.sprite.scene.data.set("peaky.sharedBags", shared); }
+    let arr = shared.get(this.persistKey);
+    if (!arr) {
+      const snap = persistentState().inventories[this.persistKey];
+      arr = snap ? snap.map((s) => ({ itemId: String(s.itemId ?? ""), qty: Math.max(0, Math.floor(Number(s.qty) || 0)) })) : [];
+      shared.set(this.persistKey, arr);
     }
-    // After the initial restore, keep the cross-scene snapshot current EVERY tick.
-    // This is robust to ANY mutation path — Add Item, a UI drag/transfer between
-    // inventories, craft, slot moves — without instrumenting each one. Cheap: a
-    // small array copy, and only for inventories with a persistKey.
-    if (this.persistKey) this.saveSnapshot();
+    this.slots = arr; // share the reference — all instances mutate ONE bag
+    this.normalize();
+    const seen = new Set<string>();
+    for (const s of this.slots) if (s.itemId && !seen.has(s.itemId)) { seen.add(s.itemId); this.mirrorOut(s.itemId); }
+    this.saveSnapshot();
   }
 
+  /** Pad / trim `slots` to capacity and fix invalid entries — MUTATES IN PLACE
+   *  so a shared (persistKey) bag keeps its single array reference across every
+   *  instance that points at it. */
   private normalize(): void {
     const cap = Math.max(1, Math.floor(this.capacity));
-    const out: InventorySlot[] = [];
-    for (let i = 0; i < cap; i++) {
+    for (let i = 0; i < this.slots.length; i++) {
       const s = this.slots[i];
-      out.push(s && typeof s.itemId === "string" && typeof s.qty === "number"
-        ? { itemId: s.itemId, qty: s.qty }
-        : { itemId: "", qty: 0 });
+      if (!s || typeof s.itemId !== "string" || typeof s.qty !== "number") this.slots[i] = { itemId: "", qty: 0 };
     }
-    this.slots = out;
+    while (this.slots.length < cap) this.slots.push({ itemId: "", qty: 0 });
+    if (this.slots.length > cap) this.slots.length = cap;
   }
 
   /** Add `qty` of `name`, stacking into existing matching slots first (up to

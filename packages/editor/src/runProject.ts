@@ -1084,6 +1084,11 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // BP every frame. Defaults to "never" on legacy BPs (no behavior
       // change for existing projects).
       sprite.cullMode = bp.cullMode ?? "never";
+      // Off-screen throttle rate (frames between ticks) — from the BP's Hz.
+      sprite.cullThrottleFrames = Math.max(1, Math.round(60 / Math.max(1, bp.cullThrottleHz ?? 10)));
+      // Decision throttle — re-decide state-machine / logic at a reduced rate
+      // (movement + animation stay smooth). 1 = every frame (default).
+      sprite.decisionTickRate = Math.max(1, Math.floor(bp.decisionTickRate ?? 1));
       // CollisionScan opt-out — propagated from BP. Swarm enemies with
       // this flag set bypass the broad-phase pair detection, dropping
       // the per-cluster cost from O(M²) (M sprites in a cell) to 0.

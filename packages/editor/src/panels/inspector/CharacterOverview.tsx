@@ -2036,6 +2036,20 @@ function ConditionKindPicker({ value, onPick }: { value: string; onPick: (kind: 
               placeholder="Search conditions…"
               style={{ width: "100%", fontSize: 11, padding: "3px 6px", marginBottom: 6, boxSizing: "border-box" }}
             />
+            {!q && (
+              <button
+                type="button"
+                onClick={() => { onPick("None" as ConditionKind); setOpen(false); setSearch(""); }}
+                title="No condition — the state never activates on its own. Drive it from the Logic Sheet (Set State) or a nav arrival. For manual-only states."
+                style={{
+                  display: "block", width: "100%", textAlign: "left", padding: "3px 8px",
+                  fontSize: 11, cursor: "pointer", marginBottom: 6,
+                  background: value === "None" ? "var(--accent)" : "rgba(255,255,255,0.05)",
+                  color: value === "None" ? "var(--on-accent)" : "var(--text-dim)",
+                  border: "1px dashed var(--border)", borderRadius: 3,
+                }}
+              >None (manual only)</button>
+            )}
             {orderedGroups.map(([comp, kinds]) => {
               const t = COMPONENT_THEME[comp] ?? conditionComponent(kinds[0]);
               const isCollapsed = collapsed.has(comp) && !q;
@@ -2215,7 +2229,10 @@ function ConditionEditor({
       <option value="">(pick anim)</option>
       {opts.animNames.map((a) => <option key={a} value={a}>{a}</option>)}
     </select>);
-  if (has("signal")) widgets.push(
+  // `signal` (singular, IsSignalFiring) and `signals` (plural, OnSignal) are
+  // two representations of the same idea — only ever show ONE picker, even if a
+  // migrated/stale condition carries both fields (was rendering two side by side).
+  if (has("signal") && !has("signals")) widgets.push(
     <SignalPicker key="signal" value={String(c.signal ?? "")} onChange={(v) => set({ signal: v })} placeholder="pick signal…" style={{ minWidth: 130, fontSize: 11 }} forBpId={opts.bpId} />);
   if (has("signals")) {
     const arr = Array.isArray(c.signals) ? (c.signals as string[]) : [];

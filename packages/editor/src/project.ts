@@ -230,6 +230,25 @@ export interface BlueprintDef {
    */
   cullMode?: "never" | "throttled" | "freeze";
   /**
+   * Off-screen tick rate (Hz) when cullMode is "throttled". 10 (default) / 20 /
+   * 30. Higher = smoother off-screen movement on wake-up but smaller CPU win.
+   * Ignored unless cullMode === "throttled". Missing → 10.
+   */
+  cullThrottleHz?: number;
+  /**
+   * Frames between "decision" passes for this BP's instances. Throttles ONLY
+   * the expensive thinking — the StateMachine's state selection and the Logic
+   * Sheet's per-frame OnTick + condition eval — while movement, animation
+   * playback and overlay sync keep running every frame, so motion stays smooth.
+   *   1 (default) = decide every frame (60Hz).
+   *   2 = 30Hz · 3 = 20Hz · 6 = 10Hz.
+   * For big background swarms whose logic only needs to re-decide a few times a
+   * second. Reaction latency ≈ rate (e.g. 6 → up to ~100ms). NOT for combat
+   * actors that rely on frame-signals / frame-motions / per-frame triggers —
+   * those are evaluated at the reduced rate too. Missing → 1 (no change).
+   */
+  decisionTickRate?: number;
+  /**
    * Skip this BP's instances from CollisionScan's broad-phase pair detection.
    * MASSIVE perf win at scale: when 1500 swarm NPCs cluster in one cell, the
    * pair scan would normally check 1500²/2 = ~1M pairs per frame. With this
@@ -849,6 +868,11 @@ export interface NavMesh {
   /** When on, the runtime draws each point colored by state (active / busy /
    *  consumed / depleted) during Play — a debugging aid. */
   debug?: boolean;
+  /** When on, patrol scans only consider nav points in the SAME connected
+   *  walkable area as the NPC — so an NPC never targets (or runs a doomed A*
+   *  toward) a point in a disconnected painted area it can't reach. Only matters
+   *  when the painted mesh has separate, unconnected blobs. Scene-wide. */
+  regionLocked?: boolean;
 }
 
 export interface NavObstacle {

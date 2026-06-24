@@ -15,24 +15,46 @@ export interface NavPointLite {
  *  source tile (hand-placed missions) are always considered present, so they
  *  fall through to claim-only behavior. Tile-backed points go unavailable while
  *  their tile is mined and return the moment it grows back. */
+// Per-frame memo of tile-existence per source cell. ALL NPCs scan the SAME nav
+// points every re-advance, so a point's tile-check is otherwise recomputed once
+// per (NPC × point) — the `hasPlacementAt` 19.5% in the profile. Computing it
+// ONCE per point per frame collapses that. Cleared when the frame changes; a
+// tile mined mid-frame reads stale-by-one-frame, which is harmless (the claim
+// system + the actual mine handle the real state).
+let _tileExistsFrame = -1;
+const _tileExistsMemo = new Map<string, boolean>();
+
 export function navPointTileExists(scene: Phaser.Scene, p: { srcMap?: string; srcX?: number; srcY?: number }): boolean {
   if (p.srcX == null || p.srcY == null) return true;
+  const frame = scene.game?.loop?.frame ?? -1;
+  if (frame !== _tileExistsFrame) { _tileExistsFrame = frame; _tileExistsMemo.clear(); }
+  const key = `${p.srcMap ?? ""}|${p.srcX}|${p.srcY}`;
+  const memo = _tileExistsMemo.get(key);
+  if (memo !== undefined) return memo;
+
+  let result: boolean;
   // Prefer the exact named tilemap; fall back to scanning every registered
   // tilemap so an untitled map (or moved instance) still resolves.
   const named = findTilemapAtWorld(scene, p.srcMap ?? "", p.srcX, p.srcY);
   if (named) {
     const cell = named.worldToCell(p.srcX, p.srcY);
-    return cell ? named.hasPlacementAt(cell.c, cell.r) : true;
-  }
-  const all = scene.data.get("peaky.tilemapsByNameAll") as Map<string, TilemapRenderer[]> | undefined;
-  if (!all || all.size === 0) return true; // no tilemaps at all → don't gate
-  for (const arr of all.values()) {
-    for (const tm of arr) {
-      const cell = tm.worldToCell(p.srcX, p.srcY);
-      if (cell && tm.hasPlacementAt(cell.c, cell.r)) return true;
+    result = cell ? named.hasPlacementAt(cell.c, cell.r) : true;
+  } else {
+    const all = scene.data.get("peaky.tilemapsByNameAll") as Map<string, TilemapRenderer[]> | undefined;
+    if (!all || all.size === 0) {
+      result = true; // no tilemaps at all → don't gate
+    } else {
+      result = false;
+      outer: for (const arr of all.values()) {
+        for (const tm of arr) {
+          const cell = tm.worldToCell(p.srcX, p.srcY);
+          if (cell && tm.hasPlacementAt(cell.c, cell.r)) { result = true; break outer; }
+        }
+      }
     }
   }
-  return false;
+  _tileExistsMemo.set(key, result);
+  return result;
 }
 
 /** Refresh this NPC's claim lease on a nav point (called each tick while it's

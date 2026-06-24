@@ -278,7 +278,11 @@ export class MoveTo extends Behavior {
         if (this.navPatrol && this.navPatrol.points.length > 0) {
           const wp = this.navPatrol.points[Math.max(0, Math.min(this.navPatrol.points.length - 1, this.navPatrol.idx))];
           this._onWaypointArrived(wp);
-          const waitSec = wp.waitSec ?? 0;
+          // Jitter the wait ±25% per NPC so a herd that spawned + arrived in
+          // lockstep doesn't all finish waiting on the SAME frame and re-path
+          // together (1000 pathfinds in one frame = the periodic spike whose
+          // period == the wait time). Spreads the re-advances across frames.
+          const waitSec = (wp.waitSec ?? 0) * (0.75 + Math.random() * 0.5);
           if (waitSec > 0) { this._waitLeft = waitSec; this.navPath = null; this._navIdx = 0; this._moving = false; this._setVelocity(0, 0); return; }
           this._advancePatrol();
           return;
@@ -487,12 +491,7 @@ export class MoveTo extends Behavior {
     const pat = this.navPatrol!;
     const n = pat.points.length;
     const scene = this.sprite.scene;
-    // Available = not single-use-consumed, not claimed by another NPC, and (if
-    // tile-backed) its tile still exists. The current point counts as available
-    // to US even if we hold its claim.
     const isAvail = (i: number) => { const p = pat.points[i]; return !!(p?.id) && isNavPointAvailable(scene, p as { id: string; singleUse?: boolean; srcMap?: string; srcX?: number; srcY?: number }, this.sprite.uid); };
-    // No available point — PARK (don't end the patrol). Hold the fallback state,
-    // stop, and let update()'s waiting loop re-scan + resume when one frees up.
     const availCount = (() => { let c = 0; for (let i = 0; i < n; i++) if (isAvail(i)) c++; return c; })();
     if (availCount === 0) {
       this.navPath = null; this._navIdx = 0; this._moving = false;
@@ -505,7 +504,6 @@ export class MoveTo extends Behavior {
     }
     this.navWaiting = false;
     if (pat.mode === "nearest") {
-      // Head to the closest AVAILABLE point, excluding the one we just left.
       const ox = this.sprite.gameObject.x, oy = this.sprite.gameObject.y;
       let bestI = -1, bestD = Infinity;
       for (let i = 0; i < n; i++) {
@@ -513,8 +511,6 @@ export class MoveTo extends Behavior {
         const d = (pat.points[i].x - ox) ** 2 + (pat.points[i].y - oy) ** 2;
         if (d < bestD) { bestD = d; bestI = i; }
       }
-      // Only the current point left available → keep it (single-use already
-      // excludes consumed, so this is the n=1 / last-standing case).
       if (bestI < 0 && isAvail(pat.idx)) bestI = pat.idx;
       pat.idx = bestI >= 0 ? bestI : pat.idx;
     } else {
@@ -533,16 +529,17 @@ export class MoveTo extends Behavior {
     const next = pat.points[Math.max(0, Math.min(n - 1, pat.idx))];
     const grid = this.sprite.scene?.data?.get("peaky.navGrid") as NavGrid | undefined;
     const path = grid ? findPath(grid, this.sprite.gameObject.x, this.sprite.gameObject.y, next.x, next.y) : null;
-    // Claim the moment we commit, so a peer resuming in the SAME frame picks a
-    // different point (no re-stacking when one bush frees and several wait).
     if (next?.id) claimNavPoint(this.sprite.scene, next.id, this.sprite.uid);
     if (path) { this.navPath = path; this._navIdx = 0; }
     else {
-      // No route to the next point — stop the patrol cleanly instead of drifting.
-      this.navPatrol = null; this.navPath = null; this._navIdx = 0; this._moving = false;
+      // No route to the point YET — PARK and retry instead of killing the patrol
+      // (spawn-frame findPath can fail before position/world settles).
+      this.navPath = null; this._navIdx = 0; this._moving = false;
       this._setVelocity(0, 0);
       this.mode = "position"; this.targetX = this.sprite.gameObject.x; this.targetY = this.sprite.gameObject.y;
-      this.sprite.events.emit("OnNavFailed");
+      if (anim && this.navFallbackState) anim.forcedState = this.navFallbackState;
+      if (!this.navWaiting) { this.navWaiting = true; this.sprite.events.emit("OnNavFailed"); }
+      this._waitRecheck = 0.5;
     }
   }
 

@@ -2,7 +2,12 @@ import { useMemo, useState, type ReactNode, type CSSProperties } from "react";
 import { PALETTE, nodeShape, PIN_COLORS, HIDDEN_FROM_PICKER, HIDDEN_CONDITIONS } from "./inspector/LogicSheet/LogicGraphCanvas";
 import { triggerTheme, actionComponent, conditionComponent, flowTheme, type ComponentTheme } from "./inspector/LogicSheet/nodeRegistry";
 import { nodeDescription, nodeExample } from "./inspector/LogicSheet/nodeDocs";
-import type { LogicGraphNode } from "../project";
+import { BEHAVIOR_PARAMS, type BehaviorParamMeta } from "../behaviorMeta";
+import { COMPONENT_DOCS } from "./componentDocs";
+import { ComponentIcon, hasComponentIcon } from "../componentIcons";
+import { ParamField } from "./inspector/BlueprintInspector";
+import { useEditor } from "../store";
+import type { LogicGraphNode, BehaviorKind } from "../project";
 
 type Entry = { type: string; kind: LogicGraphNode["kind"]; label: string; defaults: Record<string, unknown> };
 
@@ -63,26 +68,25 @@ function NodesDoc() {
   const visible = (e: Entry) =>
     !HIDDEN_FROM_PICKER.has(e.type) && !(e.kind === "condition" && HIDDEN_CONDITIONS.has(e.type));
   const total = useMemo(() => PALETTE.reduce((n, g) => n + (g.entries as Entry[]).filter(visible).length, 0), []);
-  // "category" = the picker's own groups (Triggers / Actions / CharacterMovement…).
-  // "component" = regroup every node by its colored component label instead.
-  const [groupMode, setGroupMode] = useState<"category" | "component">("category");
+  // Every node is grouped by its colored component label.
   const groups = useMemo(() => {
     const match = (e: Entry) => !q || e.label.toLowerCase().includes(q) || e.type.toLowerCase().includes(q) || nodeDescription(e.type).toLowerCase().includes(q);
-    if (groupMode === "component") {
-      const byComp = new Map<string, Entry[]>();
-      for (const g of PALETTE) for (const e of g.entries as Entry[]) {
-        if (!visible(e) || !match(e)) continue;
-        const arr = byComp.get(themeFor(e).label);
-        if (arr) arr.push(e); else byComp.set(themeFor(e).label, [e]);
-      }
-      return [...byComp.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([title, entries]) => ({ title, entries, color: themeFor(entries[0]).chipBg }));
+    const byComp = new Map<string, Entry[]>();
+    // A node can sit in several picker categories (e.g. a MoveTo setter shows
+    // under both Actions and MoveTo). Grouping by component would funnel them
+    // into ONE bucket and render duplicated — dedup by kind:type.
+    const seen = new Set<string>();
+    for (const g of PALETTE) for (const e of g.entries as Entry[]) {
+      if (!visible(e) || !match(e)) continue;
+      const key = `${e.kind}:${e.type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const arr = byComp.get(themeFor(e).label);
+      if (arr) arr.push(e); else byComp.set(themeFor(e).label, [e]);
     }
-    return PALETTE.map((g) => {
-      const entries = (g.entries as Entry[]).filter(visible).filter(match);
-      return { title: g.group, entries, color: entries[0] ? themeFor(entries[0]).chipBg : "#5f6b82" };
-    }).filter((g) => g.entries.length > 0);
-  }, [q, groupMode]);
+    return [...byComp.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([title, entries]) => ({ title, entries, color: themeFor(entries[0]).chipBg }));
+  }, [q]);
   const shown = groups.reduce((n, g) => n + g.entries.length, 0);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const toggleGroup = (title: string) => setCollapsed((prev) => {
@@ -102,11 +106,9 @@ function NodesDoc() {
           placeholder="Search nodes…  (name or what it does)"
           style={{ flex: 1, maxWidth: 420, fontSize: 12, padding: "6px 10px", background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 5, color: "#fff" }}
         />
-        <button style={{ ...btn, color: "#fff", background: "#3a82e8", border: "1px solid #3a82e8" }} title="Switch between the picker's categories and grouping by component color" onClick={() => setGroupMode((m) => (m === "category" ? "component" : "category"))}>
-          Group: {groupMode === "category" ? "Category" : "Component"}
-        </button>
-        <button style={btn} onClick={() => setCollapsed(new Set())}>Expand all</button>
-        <button style={btn} onClick={() => setCollapsed(new Set(groups.map((g) => g.title)))}>Collapse all</button>
+        {(() => { const anyOpen = groups.some((g) => !collapsed.has(g.title)); return (
+          <button style={btn} onClick={() => setCollapsed(anyOpen ? new Set(groups.map((g) => g.title)) : new Set())}>{anyOpen ? "Collapse all" : "Expand all"}</button>
+        ); })()}
         <span style={{ fontSize: 11, color: "#8b93a6" }}>{shown} / {total} nodes</span>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 18px 40px" }}>
@@ -126,7 +128,7 @@ function NodesDoc() {
               {!isCollapsed && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                   {g.entries.map((e) => (
-                    <div key={e.type} style={{ display: "flex", gap: 18, alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8 }}>
+                    <div key={`${e.kind}:${e.type}`} style={{ display: "flex", gap: 18, alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8 }}>
                       <div style={{ flexShrink: 0 }}><NodePreview entry={e} /></div>
                       <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.5 }}>
                         <div style={{ fontWeight: 600, fontSize: 13 }}>{e.label} <code style={{ fontSize: 10.5, color: "#7f8aa3", fontWeight: 400 }}>{e.type}</code></div>
@@ -306,6 +308,16 @@ function StateMachineDoc() {
         <li style={{ margin: "4px 0" }}><b>Sub-conditions</b> — a nested group with its OWN AND/OR, folded in as one term. This lets you build things like <Code>(grounded AND attack) AND (byWallLeft OR byWallRight)</Code>.</li>
       </ul>
 
+      <H2>"None" — manual-only states</H2>
+      <P>At the very top of the condition picker is <b>None (manual only)</b>. Pick it when a state should <b>not decide its own activation</b> — it never matches on its own, so it stays out of the priority race and only turns on when you <b>drive it from elsewhere</b>:</P>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "4px 0" }}>the Logic Sheet's <Code>Set State</Code> node,</li>
+        <li style={{ margin: "4px 0" }}>a nav waypoint's <b>set state on arrive</b> (e.g. an NPC plays <i>eat</i> / <i>sleep</i> when it reaches a point),</li>
+        <li style={{ margin: "4px 0" }}>or any other <b>forced-state</b> source.</li>
+      </ul>
+      <P>Use it for cutscene poses, scripted one-off reactions, or nav-driven states you want to trigger <i>explicitly</i> rather than have compete with idle/walk/etc. every frame. (Under the hood a "None" condition simply never evaluates true.)</P>
+      <Callout tone="tip">Prefer <b>None</b> over a fake never-true condition (like <Code>1 == 0</Code>) — it reads clearly as "this state is driven by logic", and it won't accidentally start matching if you tweak a variable.</Callout>
+
       <H2>Animations: Enter · Main · Exit, Loop & Hold on Finish</H2>
       <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 0", flexWrap: "wrap", fontSize: 12.5 }}>
         {["jump_start (enter, once)", "jump (main, loops)", "land (exit, once)"].map((s, i) => (
@@ -353,6 +365,503 @@ function StateMachineDoc() {
   );
 }
 
+// Reserved/auto-attached behaviors that aren't in the + Component menu, so they
+// don't belong in this list (Camera is auto on Camera BPs; StateMachine has its
+// own doc tab; UIWidgetRenderer is internal — authors use the Widget component).
+const RESERVED_COMPONENTS = new Set<BehaviorKind>(["Camera", "StateMachine", "UIWidgetRenderer"]);
+// Mirror BlueprintComponents' colorForBehavior so the colored-cube fallback in
+// the doc chip matches the real panel for components without an SVG icon.
+function chipColor(kind: BehaviorKind): string {
+  switch (kind) {
+    case "CharacterMovement": return "#4ad17a";
+    case "Collider":          return "#4ab1d1";
+    case "SpriteRenderer":    return "#d18a4a";
+    case "Solid":             return "#7e7eaa";
+    default:                  return "#888";
+  }
+}
+
+/** A faithful copy of the component chip as it appears in the + Component panel
+ *  (real icon or colored-cube fallback + the kind name), for the docs. */
+function ComponentChip({ kind }: { kind: BehaviorKind }) {
+  return (
+    <div title="How it looks in the Components panel" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 8px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, fontSize: 11, color: "#dfe4ee", whiteSpace: "nowrap" }}>
+      {hasComponentIcon(kind)
+        ? <ComponentIcon kind={kind} size={14} style={{ flex: "0 0 auto" }} />
+        : <span style={{ width: 12, height: 12, background: chipColor(kind), border: "1px solid rgba(0,0,0,0.4)", borderRadius: 2, flex: "0 0 auto" }} />}
+      <span>{kind}</span>
+    </div>
+  );
+}
+
+/** The whole component's parameter window, rendered by the REAL inspector
+ *  `ParamField` (same code + same CSS as the live panel, so it's pixel-identical)
+ *  with each field annotated by its plain-English description on the right. */
+function ComponentPanelMock({ kind, params, descs }: { kind: BehaviorKind; params: BehaviorParamMeta[]; descs?: Record<string, string> }) {
+  const sprites = useEditor((s) => s.project.sprites);
+  const uiWidgets = useEditor((s) => s.project.uiWidgets);
+  const inputActions = useEditor((s) => s.project.inputActions);
+  return (
+    <div style={{ marginTop: 12, background: "#171b24", border: "1px solid rgba(255,255,255,0.11)", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.11)", background: "#20252f" }}>
+        <span style={{ color: "#e8b51f", fontWeight: 600, fontSize: 12.5 }}>{kind}</span>
+        <span style={{ color: "#757d8a", fontSize: 11, letterSpacing: 2 }}>⚙ ✕</span>
+      </div>
+      <div style={{ padding: "4px 0" }}>
+        {params.map((p, i) => {
+          const soon = !!p.comingSoon;
+          const desc = soon ? `🔒 ${p.comingSoon}` : (descs?.[p.key] ?? p.label);
+          return (
+            <div key={p.key + i} style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 18, alignItems: "center", padding: "1px 6px", background: i % 2 ? "rgba(255,255,255,0.015)" : "transparent", opacity: soon ? 0.5 : 1 }}>
+              {/* The actual inspector field — non-interactive in the doc. */}
+              <div style={{ pointerEvents: "none", width: 320 }}>
+                <ParamField
+                  paramKey={p.key}
+                  label={p.label}
+                  type={p.type}
+                  options={p.options}
+                  value={p.default}
+                  sprites={sprites}
+                  currentSpriteId=""
+                  uiWidgets={uiWidgets}
+                  inputActions={inputActions}
+                  onChange={() => {}}
+                />
+              </div>
+              <div style={{ fontSize: 12.5, color: soon ? "#9a8a6a" : "#aab3c2", lineHeight: 1.45 }}>{desc}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** The Components tab — every Blueprint component + its parameters, in plain
+ *  English. Field ROWS come straight from BEHAVIOR_PARAMS so the doc tracks the
+ *  real inspector; prose comes from COMPONENT_DOCS (label is the fallback). */
+function ComponentsDoc() {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const kinds = useMemo(
+    () => (Object.keys(BEHAVIOR_PARAMS) as BehaviorKind[]).filter((k) => !RESERVED_COMPONENTS.has(k)),
+    [],
+  );
+  const docFor = (k: BehaviorKind) => COMPONENT_DOCS[k];
+  const matches = (k: BehaviorKind) => {
+    if (!q) return true;
+    const d = docFor(k);
+    if (k.toLowerCase().includes(q) || (d?.title ?? "").toLowerCase().includes(q) || (d?.blurb ?? "").toLowerCase().includes(q)) return true;
+    return (BEHAVIOR_PARAMS[k] ?? []).some((p) => p.label.toLowerCase().includes(q) || (d?.params[p.key] ?? "").toLowerCase().includes(q));
+  };
+  const groups = useMemo(() => {
+    const byGroup = new Map<string, BehaviorKind[]>();
+    for (const k of kinds) {
+      if (!matches(k)) continue;
+      const g = docFor(k)?.group ?? "Misc";
+      const arr = byGroup.get(g); if (arr) arr.push(k); else byGroup.set(g, [k]);
+    }
+    return [...byGroup.entries()].map(([title, ks]) => ({
+      title,
+      ks: ks.sort((a, b) => (docFor(a)?.title ?? a).localeCompare(docFor(b)?.title ?? b)),
+    }));
+  }, [q]);
+  const shown = groups.reduce((n, g) => n + g.ks.length, 0);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (k: string) => setExpanded((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const cbtn = { fontSize: 11, padding: "5px 10px", cursor: "pointer", borderRadius: 5, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", color: "#cdd6e6" } as const;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search components & parameters…"
+          style={{ flex: 1, maxWidth: 420, fontSize: 12, padding: "6px 10px", background: "rgba(0,0,0,0.4)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 5, color: "#fff" }}
+        />
+        {(() => { const anyOpen = kinds.some((k) => expanded.has(k)); return (
+          <button style={cbtn} onClick={() => setExpanded(anyOpen ? new Set() : new Set(kinds))}>{anyOpen ? "Collapse all" : "Expand all"}</button>
+        ); })()}
+        <span style={{ fontSize: 11, color: "#8b93a6" }}>{shown} / {kinds.length} components</span>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "8px 18px 60px", maxWidth: 980, margin: "0 auto", width: "100%" }}>
+        {groups.map((g) => (
+          <div key={g.title} style={{ marginTop: 18 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.6, color: "#9fb0d0", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 5, marginBottom: 12 }}>{g.title}</div>
+            {g.ks.map((k) => {
+              const d = docFor(k);
+              const params = BEHAVIOR_PARAMS[k] ?? [];
+              const open = expanded.has(k) || !!q;
+              return (
+                <div key={k} style={{ marginBottom: 10, background: "rgba(255,255,255,0.025)", borderRadius: 10, padding: "10px 14px" }}>
+                  <div onClick={() => toggle(k)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10, color: "#8b93a6", width: 10, flex: "0 0 auto" }}>{open ? "▾" : "▸"}</span>
+                    <ComponentChip kind={k} />
+                    <span style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>{d?.title ?? k}</span>
+                    <code style={{ fontSize: 11, color: "#7f8aa3" }}>{k}</code>
+                    <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#6b7488" }}>{params.length === 0 ? "no settings" : `${params.length} field${params.length === 1 ? "" : "s"}`}</span>
+                  </div>
+                  {open && (
+                    <>
+                      {d?.blurb && <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.55, color: "#d4dae6" }}>{d.blurb}</div>}
+                      {d?.when && <div style={{ marginTop: 5, fontSize: 12.5, color: "#9aa6ba", fontStyle: "italic" }}>When to use: {d.when}</div>}
+                      {d?.tip && <div style={{ marginTop: 8, background: "rgba(95,174,116,0.12)", borderLeft: "3px solid #5fae74", borderRadius: 6, padding: "8px 12px", fontSize: 12.5, color: "#cfe6d6" }}>💡 {d.tip}</div>}
+                      {params.length === 0 ? (
+                        <div style={{ marginTop: 10, fontSize: 12, color: "#7f8aa3", fontStyle: "italic" }}>No settings — just attach it.</div>
+                      ) : (
+                        <ComponentPanelMock kind={k} params={params} descs={d?.params} />
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+        {shown === 0 && <div style={{ marginTop: 40, textAlign: "center", color: "#7f8aa3" }}>No components match “{query}”.</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Shared doc helpers for the Items & UI tabs ─────────────────────────────
+const hx = (n: number) => "#" + (n >>> 0).toString(16).padStart(6, "0").slice(-6);
+
+/** A simple 2/3-column reference table matching the State Machine doc style. */
+function DocTable({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
+  const cols = head.map((_, i) => (i === 0 ? "minmax(150px,200px)" : i === head.length - 1 ? "2fr" : "1.2fr")).join(" ");
+  return (
+    <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, overflow: "hidden", margin: "12px 0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: cols, background: "rgba(255,255,255,0.04)", color: "#8b93a6", fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.4 }}>
+        {head.map((h, i) => <div key={i} style={{ padding: "6px 10px" }}>{h}</div>)}
+      </div>
+      {rows.map((r, ri) => (
+        <div key={ri} style={{ display: "grid", gridTemplateColumns: cols, borderTop: "1px solid rgba(255,255,255,0.05)", background: ri % 2 ? "rgba(255,255,255,0.02)" : "transparent" }}>
+          {r.map((c, ci) => <div key={ci} style={{ padding: "7px 10px", fontSize: 12, color: ci === 0 ? "#cdd6e6" : "#aab3c2", fontWeight: ci === 0 ? 700 : 400, lineHeight: 1.45 }}>{c}</div>)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Content-Browser asset tile (blue IT for items, orange RE for recipes). */
+function AssetTile({ badge, color, name, swatch }: { badge: string; color: string; name: string; swatch?: ReactNode }) {
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", width: 92, background: "#171b24", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ height: 60, background: "#0f131b", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        <span style={{ position: "absolute", top: 4, left: 4, fontSize: 8, fontWeight: 800, color: "#fff", background: color, padding: "1px 4px", borderRadius: 3, letterSpacing: 0.5 }}>{badge}</span>
+        {swatch ?? <span style={{ width: 28, height: 28, background: "#2a3140", borderRadius: 4 }} />}
+      </div>
+      <div style={{ padding: "4px 6px", fontSize: 10.5, color: "#cdd6e6", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+    </div>
+  );
+}
+
+// Faithful inspector-style field row used by the Item / Recipe mock panels.
+function MField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "center", padding: "4px 12px" }}>
+      <label style={{ color: "#939bab", fontSize: 11 }}>{label}</label>
+      <div>{children}</div>
+    </div>
+  );
+}
+const mInput = (txt: string, faint = false): CSSProperties => ({ background: "#0f131b", color: faint ? "#565d68" : "#e6e9f0", border: "1px solid rgba(255,255,255,0.11)", padding: "5px 8px", fontSize: 12 });
+function MBox({ children, faint }: { children: ReactNode; faint?: boolean }) { return <div style={mInput(String(children), faint)}>{children}</div>; }
+function MSelect({ children }: { children: ReactNode }) {
+  return <div style={{ ...mInput(""), display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>{children}</span><span style={{ color: "#757d8a", fontSize: 9 }}>▾</span></div>;
+}
+function MToggle({ on }: { on: boolean }) {
+  return (
+    <span style={{ display: "inline-block", position: "relative", width: 30, height: 17, borderRadius: 9, border: `1px solid ${on ? "#e8b51f" : "rgba(255,255,255,0.25)"}`, background: on ? "#e8b51f" : "rgba(255,255,255,0.12)" }}>
+      <span style={{ position: "absolute", top: 1, left: on ? 15 : 1, width: 13, height: 13, borderRadius: "50%", background: on ? "#fff" : "rgba(255,255,255,0.55)" }} />
+    </span>
+  );
+}
+function MockPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ width: 320, background: "#171b24", border: "1px solid rgba(255,255,255,0.11)", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.11)", background: "#20252f", color: "#e8b51f", fontWeight: 600, fontSize: 12.5 }}>{title}</div>
+      <div style={{ padding: "6px 0" }}>{children}</div>
+    </div>
+  );
+}
+
+function ItemsDoc() {
+  return (
+    <DocScroll>
+      <H1>Items &amp; Recipes</H1>
+      <P>Two kinds of project asset, both made in the <b>Content Browser</b>. An <b>Item</b> is a thing the player can own or carry (Gold, Meat, a Sword). A <b>Recipe</b> turns some items into another item (2 Wood → 1 Plank). You design them once as assets, then your logic and UI widgets reference them <b>by name</b>.</P>
+
+      <H2>The Item asset</H2>
+      <P>Double-click an item in the Content Browser to open its editor. Every field:</P>
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap", margin: "12px 0" }}>
+        <AssetTile badge="IT" color="#3f86e6" name="Gold" swatch={<span style={{ width: 26, height: 26, borderRadius: 13, background: "#e8b51f" }} />} />
+        <MockPanel title="Item — Gold">
+          <MField label="Name"><MBox>Gold</MBox></MField>
+          <MField label="Icon (sprite)"><MSelect>coin_sprite</MSelect></MField>
+          <MField label="Icon frame"><MBox>0</MBox></MField>
+          <MField label="Max stack"><MBox>999</MBox></MField>
+          <MField label="Track count"><MToggle on /></MField>
+          <MField label="Buy price"><MBox>0</MBox></MField>
+          <MField label="Sell price"><MBox>0</MBox></MField>
+          <MField label="Tags"><MBox faint>currency</MBox></MField>
+        </MockPanel>
+      </div>
+      <DocTable head={["Field", "What it does"]} rows={[
+        ["Name", <>The item's name. Everything references it by this string — <Code>GiveItem "Gold"</Code>, recipes, widgets. Renaming cascades everywhere.</>],
+        ["Icon (sprite)", "The sprite asset used as the item's picture in inventories, shops, and pickups."],
+        ["Icon frame / Animate", <>Show one still frame (a number) or animate the icon (set to <Code>-1</Code>).</>],
+        ["Max stack", <>How many fit in one inventory slot. <Code>1</Code> = never stacks; <Code>999</Code> = big stacks like coins.</>],
+        ["Track count (countGlobal)", <>When on, the item also lives as a persistent global you can read with <Code>global:Gold</Code> — perfect for a HUD coin counter that survives scene changes.</>],
+        ["Buy / Sell price", <>Used by Shop widgets and the <Code>BuyItem</Code> / <Code>SellItem</Code> actions. <Code>0</Code> = not buyable / not sellable.</>],
+        ["Tags", "Free labels for grouping (e.g. \"weapon\", \"food\") — handy for filtering."],
+        ["Custom properties", <>Your own per-item data (e.g. <Code>damage = 10</Code>, <Code>healing = 25</Code>). Read at runtime with <Code>GetItemProp</Code>.</>],
+      ]} />
+
+      <H2>The Recipe asset</H2>
+      <P>A recipe lists the <b>inputs</b> it eats and the single <b>output</b> it produces.</P>
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap", margin: "12px 0" }}>
+        <AssetTile badge="RE" color="#e07b2e" name="Plank" />
+        <MockPanel title="Recipe — Plank">
+          <MField label="Name"><MBox>Plank</MBox></MField>
+          <MField label="Enabled"><MToggle on /></MField>
+          <div style={{ padding: "4px 12px", color: "#8b93a6", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4 }}>Inputs (consumed)</div>
+          <MField label="Input 1"><div style={{ display: "flex", gap: 6 }}><div style={{ flex: 1 }}><MSelect>Wood</MSelect></div><div style={{ width: 60 }}><MBox>2</MBox></div></div></MField>
+          <div style={{ padding: "4px 12px", color: "#8b93a6", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4 }}>Output</div>
+          <MField label="Produces"><div style={{ display: "flex", gap: 6 }}><div style={{ flex: 1 }}><MSelect>Plank</MSelect></div><div style={{ width: 60 }}><MBox>1</MBox></div></div></MField>
+        </MockPanel>
+      </div>
+      <DocTable head={["Field", "What it does"]} rows={[
+        ["Name", <>The recipe's name. Referenced by recipe actions and the Crafting widget.</>],
+        ["Enabled", <>A runtime gate. Turn it off to lock a recipe (e.g. until a quest is done) with <Code>SetRecipeEnabled</Code>. Disabled recipes can't be crafted.</>],
+        ["Inputs", "The items (and quantities) eaten when you craft. Add as many as you want."],
+        ["Output", "The single item (and quantity) produced."],
+      ]} />
+
+      <H2>Two ways to hold items</H2>
+      <P>Pick whichever fits — they're independent:</P>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "6px 0" }}><b>Count globals (simplest).</b> Just a number per item, no slots. Turn on <b>Track count</b> on the item, then <Code>GiveItem</Code> / <Code>TakeItem</Code> change it and you read it anywhere with <Code>global:Gold</Code>. Great for currency, score, keys.</li>
+        <li style={{ margin: "6px 0" }}><b>The Inventory component (slots).</b> Add the <Code>Inventory</Code> component to a Blueprint for a real bag with a slot count, stacking, and drag/drop in an Inventory widget. Use <Code>AddItem</Code> / <Code>RemoveItem</Code> and the <Code>HasItem</Code> condition.</li>
+      </ul>
+      <Callout tone="tip">Give the <b>player's</b> Inventory a <b>Persist Key</b> (e.g. <Code>player</Code>) so the bag carries across scenes. Leave it empty on chests/NPCs so each keeps its own.</Callout>
+
+      <H2>Nodes that control items</H2>
+      <DocTable head={["Node", "Type", "What it does"]} rows={[
+        [<Code>GiveItem</Code>, "Action", <>Add N to an item's count global (<Code>global:&lt;item&gt;</Code>). Persists across scenes.</>],
+        [<Code>TakeItem</Code>, "Action", "Subtract N from an item's count global (won't go below 0)."],
+        [<Code>AddItem</Code>, "Action", <>Put N of an item into this object's <b>Inventory</b> — stacks first, then fills empty slots. Fires <Code>OnItemAdded</Code> / <Code>OnInventoryFull</Code>.</>],
+        [<Code>RemoveItem</Code>, "Action", <>Take up to N of an item out of this object's Inventory. Fires <Code>OnItemRemoved</Code>.</>],
+        [<Code>GiveItemTo</Code>, "Action", "Add N of an item to ANOTHER object's Inventory (by tag/name) — pickups, loot, trades."],
+        [<Code>ClearInventory</Code>, "Action", "Empty every slot of this object's Inventory."],
+        [<Code>GetItemCount</Code>, "Action", "Read how many of an item you have into a variable (from the Inventory, or the count global)."],
+        [<Code>GetItemProp</Code>, "Action", <>Read one of an item's custom properties (e.g. <Code>damage</Code>) into a variable.</>],
+        [<Code>HasItem</Code>, "Condition", <>True while this object's Inventory holds ≥ N of an item — e.g. gate a door on <Code>HasItem "Key"</Code>.</>],
+        [<Code>InventoryIsFull</Code>, "Condition", "True when no empty slots remain."],
+      ]} />
+      <Callout>Read a count anywhere in an expression with <Code>global:Gold</Code> — e.g. a Label's text <Code>{"{global:Gold}"}</Code>, or a condition <Code>global:Gold &gt;= 100</Code>.</Callout>
+
+      <H2>Crafting</H2>
+      <P>Crafting is driven by the <b>Crafting</b> and <b>CraftGrid</b> UI widgets (see the UI tab) — they show recipes, check ingredients, and craft when clicked, emitting <Code>signalOnCraftClick</Code> / <Code>signalOnCraft</Code> that you catch with <Code>OnSignal</Code>. These nodes reshape recipes at runtime:</P>
+      <DocTable head={["Node", "Type", "What it does"]} rows={[
+        [<Code>SetRecipeEnabled</Code>, "Action", "Lock or unlock a recipe (quest-gating, tech trees)."],
+        [<Code>AddRecipeIngredient</Code>, "Action", "Add a required input to a recipe at runtime (upgrades)."],
+        [<Code>RemoveRecipeIngredient</Code>, "Action", "Remove a required input from a recipe."],
+        [<Code>SetRecipeOutput</Code>, "Action", "Change what a recipe produces (and how many) — recipe tier-ups."],
+      ]} />
+
+      <H2>Shops</H2>
+      <P>The <b>Shop</b> widget sells/buys items using their Buy/Sell price and a currency global. From logic:</P>
+      <DocTable head={["Node", "Type", "What it does"]} rows={[
+        [<Code>BuyItem</Code>, "Action", "Pay from a money global and give the item (uses the item's Buy price)."],
+        [<Code>SellItem</Code>, "Action", "Take the item and pay into a money global (uses the item's Sell price)."],
+        [<Code>RestockShop</Code>, "Action", "Refill a Shop widget's stock back to its configured amounts."],
+      ]} />
+    </DocScroll>
+  );
+}
+
+// ── UI widget visual mockups (exact default colors from the runtime) ────────
+function WidgetMock({ kind }: { kind: string }) {
+  const slotGrid = (cols: number, rows: number, tintLast = false, sel = false) => (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 26px)`, gap: 4, padding: 6, background: hx(0x1a1d23), border: `1px solid ${hx(0x404552)}`, borderRadius: 3 }}>
+      {Array.from({ length: cols * rows }).map((_, i) => (
+        <span key={i} style={{ width: 26, height: 26, background: hx(0x222831), border: `${sel && i === 0 ? 2 : 1}px solid ${sel && i === 0 ? hx(0xffd23c) : hx(0x404552)}`, opacity: tintLast && i === cols * rows - 1 ? 0.4 : 1 }} />
+      ))}
+    </div>
+  );
+  switch (kind) {
+    case "Panel": return <div style={{ width: 150, height: 70, background: hx(0x222831), opacity: 0.92, border: `1px solid ${hx(0x404552)}`, borderRadius: 6 }} />;
+    case "Label": return <div style={{ color: "#fff", fontSize: 16, fontWeight: 600 }}>Label</div>;
+    case "Button": return <div style={{ display: "inline-block", background: hx(0x2d82d4), border: `1px solid ${hx(0x4aa8ff)}`, color: "#fff", fontSize: 14, padding: "8px 18px", borderRadius: 4 }}>Button</div>;
+    case "Slider": return <div style={{ width: 150, height: 16, background: hx(0x222831), border: `1px solid ${hx(0x404552)}`, borderRadius: 8, position: "relative" }}><div style={{ position: "absolute", inset: 1, width: "50%", background: hx(0x44ddff), borderRadius: 8 }} /><span style={{ position: "absolute", left: "50%", top: -3, width: 12, height: 22, marginLeft: -6, background: "#fff", borderRadius: 3 }} /></div>;
+    case "ProgressBar": return <div style={{ width: 150, height: 16, background: hx(0x222831), border: `1px solid ${hx(0x404552)}`, borderRadius: 8, position: "relative" }}><div style={{ position: "absolute", inset: 1, width: "65%", background: hx(0x44ddff), borderRadius: 8 }} /></div>;
+    case "Dropdown": return <div style={{ display: "inline-flex", justifyContent: "space-between", alignItems: "center", gap: 16, minWidth: 110, background: hx(0x2d82d4), border: `1px solid ${hx(0x4aa8ff)}`, color: "#fff", fontSize: 13, padding: "7px 12px", borderRadius: 4 }}><span>Pick…</span><span>▾</span></div>;
+    case "Image": return <div style={{ width: 60, height: 60, background: "#0f131b", border: "1px dashed rgba(255,255,255,0.2)", borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", color: "#565d68", fontSize: 10 }}>sprite</div>;
+    case "Inventory": return slotGrid(5, 1);
+    case "Crafting": return slotGrid(5, 1, true);
+    case "Shop": return slotGrid(4, 2, false, true);
+    case "CraftGrid": return (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>{slotGrid(2, 2)}<span style={{ color: "#757d8a", fontSize: 18 }}>→</span><span style={{ width: 26, height: 26, background: hx(0x222831), border: `1px solid ${hx(0x404552)}` }} /></div>
+    );
+    default: return null;
+  }
+}
+
+const WIDGET_GALLERY: { kind: string; blurb: string; fields: string }[] = [
+  { kind: "Panel", blurb: "A container frame — the backing box for a HUD group or menu. In multi mode it holds child elements.", fields: "bg color/alpha, border, corner radius, shadow, padding, layout (row/column) for children" },
+  { kind: "Label", blurb: "Static or live text. Put {var:hp} / {global:Gold} placeholders in the text and they update every frame.", fields: "text, font family/size/color, bold, italic, align, vAlign" },
+  { kind: "Button", blurb: "A clickable button. Emits a signal you catch with On Signal to run logic.", fields: "text, signalOnClick, hover color, pressed color, click mode (single/double)" },
+  { kind: "Slider", blurb: "A draggable value bar (volume, settings). Emits signalOnChange as you drag.", fields: "min, max, value, direction, fill color, signalOnChange, readOnly" },
+  { kind: "ProgressBar", blurb: "A read-only fill bar — health, XP, loading. Bind value to var:hp / maxHp for a live healthbar.", fields: "min, max, value (literal or expression), direction, fill color" },
+  { kind: "Dropdown", blurb: "A pick-one menu. Each option can carry its own signal; the whole thing emits signalOnSelect.", fields: "options[], selectedValue, signalOnSelect" },
+  { kind: "Image", blurb: "Shows a sprite frame — a portrait, an icon, a logo.", fields: "spriteId" },
+  { kind: "Inventory", blurb: "A live grid of a character's item slots, with drag/drop. Mirrors the target's Inventory component.", fields: "rows, cols, slotSize, targetBp, signalOnSlotClick/DoubleClick, slotsDraggable" },
+  { kind: "Crafting", blurb: "A grid of recipes; ones you can't afford are tinted. Click a craftable recipe to make it.", fields: "rows, cols, uncraftableTint, signalOnCraftClick" },
+  { kind: "CraftGrid", blurb: "An input grid + a result slot — drop ingredients in, take the result out.", fields: "rows, cols, resultGap, craft arrow sprite, signalOnCraft" },
+  { kind: "Shop", blurb: "A grid of items for sale/buy at their price, paid in a currency global.", fields: "shopSlots (item + stock), shopRole (buy/sell), currency, selection color" },
+];
+
+/** Mock of the Widget editor's Bindings table (Child · Property · Source). */
+function BindingsTableMock() {
+  const rows = [
+    { child: "hpLabel", prop: "Text", src: "var:Player.hp" },
+    { child: "hpBar", prop: "Value", src: "var:Player.hp / var:Player.maxHp" },
+    { child: "lowHpWarn", prop: "Visible", src: "var:Player.hp < 20" },
+  ];
+  const COLS = "100px 90px 1fr";
+  return (
+    <div style={{ border: "1px solid rgba(255,255,255,0.16)", borderRadius: 8, overflow: "hidden", margin: "12px 0", background: "#161a24" }}>
+      <div style={{ padding: "6px 10px", borderBottom: "1px solid rgba(255,255,255,0.1)", color: "#9fc0ff", fontWeight: 700, fontSize: 12 }}>Bindings</div>
+      <div style={{ display: "grid", gridTemplateColumns: COLS, gap: 6, padding: "6px 10px 2px", color: "#8b93a6", fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5 }}>
+        <span>Child</span><span>Property</span><span>Source (var / expr)</span>
+      </div>
+      {rows.map((r) => (
+        <div key={r.child} style={{ display: "grid", gridTemplateColumns: COLS, gap: 6, padding: "3px 10px", alignItems: "center" }}>
+          <span style={{ ...mInput(""), fontSize: 11 }}>{r.child}</span>
+          <span style={{ ...mInput(""), fontSize: 11, display: "flex", justifyContent: "space-between" }}>{r.prop}<span style={{ color: "#757d8a" }}>▾</span></span>
+          <span style={{ ...mInput(""), fontSize: 11, color: "#ffd98a" }}>{r.src}</span>
+        </div>
+      ))}
+      <div style={{ padding: "6px 10px", color: "#5fae74", fontSize: 11 }}>+ Add Binding</div>
+    </div>
+  );
+}
+
+function UIDoc() {
+  return (
+    <DocScroll>
+      <H1>UI &amp; Widgets</H1>
+      <P>UI widgets are screen-space elements — HUDs, menus, buttons, healthbars, inventories. You build them in the <b>UI Widget</b> editor, place them on a scene's UI layer (or pin one above a character with the <Code>Widget</Code> component), and they render on a dedicated <b>UI camera</b> that's locked to the screen, so they never scroll with the world.</P>
+      <Callout>A widget is either <b>single</b> mode (the widget IS one element) or <b>multi</b> mode (a canvas holding many child elements — a whole menu in one asset).</Callout>
+
+      <H2>The elements</H2>
+      <P>Every widget kind, how it looks with its default styling, and its key fields:</P>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, margin: "12px 0" }}>
+        {WIDGET_GALLERY.map((w) => (
+          <div key={w.kind} style={{ display: "grid", gridTemplateColumns: "170px 1fr", gap: 16, alignItems: "center", padding: "12px 14px", background: "rgba(255,255,255,0.025)", borderRadius: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 60 }}><WidgetMock kind={w.kind} /></div>
+            <div>
+              <div style={{ fontWeight: 700, color: "#fff", fontSize: 13.5 }}>{w.kind}</div>
+              <div style={{ marginTop: 3, color: "#d0d6e2", fontSize: 12.5, lineHeight: 1.5 }}>{w.blurb}</div>
+              <div style={{ marginTop: 4, color: "#8fa0bf", fontSize: 11.5 }}><b style={{ color: "#7f8aa3" }}>Fields:</b> {w.fields}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <H2>Placing a widget</H2>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "6px 0" }}><b>In a scene (HUD / menu):</b> drop the widget onto a UI layer. It sits fixed on screen via the UI camera.</li>
+        <li style={{ margin: "6px 0" }}><b>Above a character (healthbar, name):</b> add the <Code>Widget</Code> component to the Blueprint, pick the widget, and set an offset (e.g. Y −40). It follows the host and can <b>Hide When Dead</b>.</li>
+      </ul>
+
+      <H2>Showing live data</H2>
+      <P>Three ways to make a widget reflect game state:</P>
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "6px 0" }}><b>Text placeholders</b> — put <Code>{"{var:hp}"}</Code>, <Code>{"{global:Gold}"}</Code>, <Code>{"{BpName.score}"}</Code> in a Label's text; it re-resolves every frame.</li>
+        <li style={{ margin: "6px 0" }}><b>Value expressions</b> — a Slider/ProgressBar's value can be an expression like <Code>var:hp / var:maxHp</Code> for an instant healthbar.</li>
+        <li style={{ margin: "6px 0" }}><b>Bindings</b> — the editor's Bindings table wires a property (text / value / visible / bgColor / enabled) to an expression source, declaratively.</li>
+      </ul>
+      <Callout tone="tip">On a per-character widget, <Code>var:self.hp</Code> reads <i>that</i> instance's own variable — so every enemy's healthbar shows its own HP automatically.</Callout>
+
+      <H2>Binding element values to variables</H2>
+      <P>The cleanest way to keep a widget in sync — <b>no nodes</b>. In the Widget editor, the <b>Bindings</b> table (above the Logic Sheet) wires one element's <b>property</b> to a <b>Source</b> expression that's re-read <b>every frame</b>. Change the variable and the element follows automatically.</P>
+      <BindingsTableMock />
+      <DocTable head={["Property", "Binds…", "Source example"]} rows={[
+        ["Text", "A Label / Button / Dropdown's text.", <Code>var:Player.hp</Code>],
+        ["Value", "A Slider / ProgressBar's value.", <Code>var:Player.hp / var:Player.maxHp</Code>],
+        ["Visible", "Show / hide on a true-false test.", <Code>var:Player.hp &lt; 20</Code>],
+        ["Bg Color", "The background color (hex number).", <Code>0xff4242</Code>],
+        ["Enabled", "Interactable on/off (greys out a button).", <Code>var:Player.alive</Code>],
+      ]} />
+      <ul style={{ margin: "8px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "5px 0" }}>In a <b>multi-mode</b> widget the <b>Child</b> column picks which element the row targets; in <b>single</b> mode it binds the widget itself.</li>
+        <li style={{ margin: "5px 0" }}>The Source is any expression — <Code>var:Self.x</Code>, <Code>global:Gold</Code>, math like <Code>var:hp / var:maxHp</Code>.</li>
+      </ul>
+      <Callout>Bindings vs nodes: a <b>binding</b> means "this element <i>always</i> reflects X" (reactive, every frame). The <Code>SetUIText</Code> / <Code>SetUIValue</Code> nodes mean "change it <i>once</i>, when this event happens". Use bindings for live readouts (healthbars, counters), nodes for one-off changes.</Callout>
+
+      <H2>Inventory, Crafting &amp; Shop — setup</H2>
+      <P>These three are <b>live data widgets</b> — they don't store anything themselves; they mirror a real character's <b>Inventory component</b>, your <b>Recipe</b> assets, and item <b>prices</b>. The field that ties each to a character is <b>Character (name/tag)</b> — it matches a <b>Blueprint name</b>, an <b>instance name</b>, or a <b>tag</b> the object carries. Leave it <b>blank</b> to use the host (the object the widget is pinned to via the <Code>Widget</Code> component).</P>
+
+      <div style={{ marginTop: 16, fontWeight: 700, color: "#fff", fontSize: 14 }}>Inventory widget — a live view of one character's bag</div>
+      <ol style={{ margin: "6px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "5px 0" }}>Add the <Code>Inventory</Code> component to the character's Blueprint (set the slot count; give the <b>player</b> a <b>Persist Key</b> so its bag survives scene changes).</li>
+        <li style={{ margin: "5px 0" }}>Set the widget's <b>Character (name/tag)</b> to that Blueprint's name (or a tag it carries). Items show their icon + stack count automatically.</li>
+      </ol>
+      <DocTable head={["Field", "What it does"]} rows={[
+        ["Character (name/tag)", <>Whose bag to show — Blueprint name, instance name, or tag. <b>Blank = the host.</b></>],
+        ["On slot click signal", "Optional signal fired when a slot is clicked."],
+        ["On double-click signal", <>Fires <b>on the character</b> — wire it to "use / equip the item".</>],
+        ["Clicked item → var", "Writes the clicked item's name into a variable on the character (so your logic knows which item)."],
+        ["Slots draggable", "Let the player drag items to rearrange (default on)."],
+      ]} />
+
+      <div style={{ marginTop: 16, fontWeight: 700, color: "#fff", fontSize: 14 }}>Crafting widget — lists recipes, crafts from a character's bag</div>
+      <ol style={{ margin: "6px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "5px 0" }}>Make <b>Recipe</b> assets (inputs → output) in the Content Browser.</li>
+        <li style={{ margin: "5px 0" }}>Add an <Code>Inventory</Code> to the crafter, and set the widget's <b>Character (name/tag)</b> to it.</li>
+        <li style={{ margin: "5px 0" }}>Recipes you can afford show bright; ones missing ingredients get the <b>Uncraftable tint</b>. Click a craftable one → it eats the inputs from that bag and adds the output, and fires <b>On craft click signal</b>.</li>
+      </ol>
+
+      <div style={{ marginTop: 16, fontWeight: 700, color: "#fff", fontSize: 14 }}>Shop widget — buy / sell at item prices, paid in a currency global</div>
+      <P>Prices live on the <b>Item asset</b> (<b>Buy price</b> / <b>Sell price</b>; <Code>0</Code> = not buyable / not sellable). Two ways to build a shop:</P>
+      <ul style={{ margin: "6px 0", paddingLeft: 22 }}>
+        <li style={{ margin: "6px 0" }}><b>Shop grid</b> — assign an item per slot with a <b>stock</b> (<Code>-1</Code> = unlimited). Set <b>Money global</b> (default <Code>gold</Code>) and <b>Buy into (character)</b> — whose bag receives purchases. Clicking a slot checks you can afford the item's <b>Buy price</b>, subtracts it from <Code>global:gold</Code>, drops the stock by one, and adds the item to that character's Inventory (or its count global if it has none).</li>
+        <li style={{ margin: "6px 0" }}><b>Buy / Sell button</b> — on a Button element set <b>Shop role</b> = Buy or Sell, the item, and the money global, for a hand-designed shop. Buy charges the Buy price; Sell pays the Sell price.</li>
+      </ul>
+      <Callout tone="tip"><b>Player vs NPC:</b> point <b>Character (name/tag)</b> / <b>Buy into</b> at the <i>player's</i> Blueprint or a <Code>player</Code> tag for the player's bag, or at an <i>NPC's</i> name/tag for that NPC's bag. The currency is a shared global (<Code>global:gold</Code>), so any shop spends the same wallet.</Callout>
+
+      <H2>Nodes that control widgets</H2>
+      <DocTable head={["Node", "Type", "What it does"]} rows={[
+        [<Code>SetUIText</Code>, "Action", <>Set a Label / Button / Dropdown's text (supports <Code>{"{var}"}</Code> placeholders).</>],
+        [<Code>SetUIValue</Code>, "Action", "Set a Slider / ProgressBar's value (literal or expression)."],
+        [<Code>SetUISelectedValue</Code>, "Action", "Set a Dropdown's selected option by its value."],
+        [<Code>SetUIVisible</Code>, "Action", "Show / hide / toggle a whole widget (hidden = no render and no input)."],
+        [<Code>SetUIBgColor</Code>, "Action", "Change a widget's background color."],
+        [<Code>SetUIElement</Code>, "Action", "The universal setter — pick any element and toggle exactly which properties to change (text, value, enabled, opacity, sprite, …)."],
+        [<Code>CreateUIWidget</Code>, "Action", "Spawn a widget at runtime at an x/y (and optional layer)."],
+        [<Code>DestroyUIWidget</Code>, "Action", "Destroy every widget instance matching a name."],
+      ]} />
+
+      <H2>Reacting to clicks &amp; changes</H2>
+      <P>Widgets don't run logic themselves — they <b>emit signals</b>, and you catch them with the <Code>OnSignal</Code> trigger. Wire <i>On Signal "onStartClicked" → Go To Layout</i>.</P>
+      <DocTable head={["Widget", "Emits", "When"]} rows={[
+        ["Button", <Code>signalOnClick</Code>, "Clicked (also signalOnHover / signalOnLeave)."],
+        ["Slider", <Code>signalOnChange</Code>, "Dragged to a new value."],
+        ["Dropdown", <Code>signalOnSelect</Code>, "An option is picked (each option can also carry its own signal)."],
+        ["Inventory", <Code>signalOnSlotClick</Code>, "A slot is clicked / double-clicked (signalOnSlotDoubleClick)."],
+        ["Crafting", <Code>signalOnCraftClick</Code>, "A craftable recipe is clicked."],
+        ["CraftGrid", <Code>signalOnCraft</Code>, "The crafted result is taken out."],
+      ]} />
+      <Callout>For a widget made of many child elements (multi mode), a child's signal fires on <b>both</b> the child and the parent widget — so the parent's Logic Sheet can handle every button in one place.</Callout>
+    </DocScroll>
+  );
+}
+
 /** Placeholder for tabs whose content we'll fill in next. */
 function ComingSoon({ title }: { title: string }) {
   return (
@@ -366,7 +875,7 @@ function ComingSoon({ title }: { title: string }) {
 export function Documentation({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<DocTab>("nodes");
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "#0b0d12", display: "flex", flexDirection: "column", color: "#e8ecf5" }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "#0b0d12", display: "flex", flexDirection: "column", color: "#e8ecf5" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)", background: "#11141c" }}>
         <span style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap" }}>📖 Documentation</span>
         <div style={{ display: "flex", gap: 4, flex: 1, flexWrap: "wrap" }}>
@@ -389,9 +898,20 @@ export function Documentation({ onClose }: { onClose: () => void }) {
         </div>
         <button onClick={onClose} style={{ fontSize: 12, padding: "6px 14px", cursor: "pointer", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 5, color: "#fff", whiteSpace: "nowrap" }}>✕ Close</button>
       </div>
+      {/* TODO: replace the placeholder report URL below with the real one. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "18px 26px", fontSize: 22, lineHeight: 1.4, color: "#f0d59a", background: "rgba(230,160,60,0.13)", borderBottom: "2px solid rgba(230,160,60,0.4)" }}>
+        <span style={{ flex: "0 0 auto", fontSize: 42 }}>⚠️</span>
+        <span style={{ flex: 1 }}>
+          Peaky is an <b>early-access</b> engine built by <b>one person + AI</b> — some features may not work yet, and parts of these docs can be out of date or mismatched. If something's broken or wrong, reporting it is hugely appreciated:{" "}
+          <a href="https://www.exampleiwillreplacethislater.com" target="_blank" rel="noreferrer" style={{ color: "#9fc0ff", fontWeight: 700, whiteSpace: "nowrap" }}>www.exampleiwillreplacethislater.com</a>
+        </span>
+      </div>
       <div style={{ flex: 1, overflow: "hidden" }}>
         {tab === "nodes" ? <NodesDoc />
           : tab === "stateMachine" ? <StateMachineDoc />
+          : tab === "components" ? <ComponentsDoc />
+          : tab === "items" ? <ItemsDoc />
+          : tab === "ui" ? <UIDoc />
           : <ComingSoon title={DOC_TABS.find((t) => t.id === tab)!.label} />}
       </div>
     </div>

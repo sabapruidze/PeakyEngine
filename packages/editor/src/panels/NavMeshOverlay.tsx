@@ -83,6 +83,7 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
   const setNavCellSize = useEditor((s) => s.setNavCellSize);
   const setNavSize = useEditor((s) => s.setNavSize);
   const setNavDebug = useEditor((s) => s.setNavDebug);
+  const setNavRegionLocked = useEditor((s) => s.setNavRegionLocked);
   const addNavObstacle = useEditor((s) => s.addNavObstacle);
   const updateNavObstacle = useEditor((s) => s.updateNavObstacle);
   const removeNavObstacle = useEditor((s) => s.removeNavObstacle);
@@ -363,6 +364,11 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
         title="Draw each point colored by state during Play: green=active, yellow=busy (claimed), red=consumed, gray=depleted (tile mined/regrowing).">
         <input type="checkbox" checked={!!nm.debug} onMouseDown={(e) => e.stopPropagation()} onChange={(e) => setNavDebug(scene.id, e.target.checked)} />
         debug in game
+      </label>
+      <label style={{ marginLeft: 6, paddingLeft: 8, borderLeft: "1px solid rgba(255,255,255,0.15)", display: "flex", alignItems: "center", gap: 4, color: "#9aa", cursor: "pointer", fontSize: 10 }}
+        title="Only let NPCs target nav points in the SAME connected painted area they're in — skips doomed pathfinding toward unreachable points in disconnected blobs. Only matters when the mesh has separate areas.">
+        <input type="checkbox" checked={!!nm.regionLocked} onMouseDown={(e) => e.stopPropagation()} onChange={(e) => setNavRegionLocked(scene.id, e.target.checked)} />
+        area filter
       </label>
       {tool === "obstacle" && (
         <>

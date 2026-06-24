@@ -519,7 +519,13 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
       return () => sprite.scene.events.off("update", onUpdate);
     }
     case "OnEveryNSeconds": {
-      const interval = Math.max(0.05, Number(trigger.params.interval ?? 1));
+      // Interval accepts a wired number pin OR an expression (random(2,5) /
+      // var:…) OR a plain number — resolved ONCE here at subscribe time. The
+      // timer's delay is fixed per sprite, so random() gives each its own
+      // cadence (e.g. sheep graze on staggered intervals). Min 0.05s.
+      const nodeById = new Map(folder.graph.nodes.map((n) => [n.id, n]));
+      const wired = resolveDataPin(trigger.id, "interval", folder.graph.edges, nodeById, sprite);
+      const interval = Math.max(0.05, numOr(wired !== undefined ? wired : trigger.params.interval, 1, sprite));
       const timer = sprite.scene.time.addEvent({
         delay: interval * 1000,
         loop: true,
