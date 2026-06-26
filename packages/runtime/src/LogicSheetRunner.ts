@@ -40,6 +40,7 @@ export type LogicTriggerKind =
   | "OnDamageTaken"
   | "OnHealed"
   | "OnBlocked"
+  | "OnPartialBlock"
   | "OnDeath"
   | "OnItemAdded"
   | "OnItemRemoved"
@@ -298,6 +299,7 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
     case "OnDamageTaken":      return sprite.events.on("OnDamageTaken", fire);
     case "OnDeath":            return sprite.events.on("OnDeath", fire);
     case "OnBlocked":          return sprite.events.on("OnBlocked", fire);
+    case "OnPartialBlock":     return sprite.events.on("OnPartialBlock", fire);
     case "OnItemAdded":        return sprite.events.on("OnItemAdded", fire);
     case "OnItemRemoved":      return sprite.events.on("OnItemRemoved", fire);
     case "OnInventoryFull":    return sprite.events.on("OnInventoryFull", fire);
@@ -803,6 +805,30 @@ function executeGraph(sprite: Sprite, folder: LogicFolder, triggerNodeId: string
   while (cur && budget-- > 0) {
     const node = nodeById.get(cur);
     if (!node) break;
+    if (node.kind === "action" && node.type === "HitStop"
+        && (node.params.blockUntilDone === true || node.params.blockUntilDone === 1)) {
+      // `blockUntilDone` HitStop: run the freeze, then HOLD the chain for the
+      // full freeze (delay + duration) in REAL time so nodes AFTER it run once
+      // the freeze ends. (Default HitStop is fire-and-forget — handled by the
+      // generic stepNode path, chain continues instantly.)
+      const nexts = stepNode(sprite, node, edges, nodeById, folder); // runs the HitStop action + returns next exec
+      const delayMs = Math.max(0, Number(resolveOrParam(node, "delayMs", edges, nodeById, sprite, 50)));
+      const durMs = Math.max(0, Number(resolveOrParam(node, "durationMs", edges, nodeById, sprite, 80)));
+      if (nexts.length) {
+        const state = ATTACHED.get(sprite);
+        let fired = false;
+        const cleanup = () => { if (fired) return; fired = true; clearTimeout(id); state?.waitCleanups.delete(cleanup); };
+        const id = setTimeout(() => {
+          if (fired) return;
+          fired = true;
+          state?.waitCleanups.delete(cleanup);
+          if (sprite.destroyed) return;
+          for (const nx of nexts) executeGraph(sprite, folder, triggerNodeId, nx);
+        }, delayMs + durMs);
+        state?.waitCleanups.add(cleanup);
+      }
+      return;
+    }
     if (node.kind === "action" && node.type === "Wait") {
       const secs = Number(resolveOrParam(node, "seconds", edges, nodeById, sprite, 0));
       const nexts = findExecTargets(node.id, "exec", edges);
@@ -811,6 +837,33 @@ function executeGraph(sprite: Sprite, folder: LogicFolder, triggerNodeId: string
           if (sprite.destroyed) return;
           for (const nx of nexts) executeGraph(sprite, folder, triggerNodeId, nx);
         });
+      } else if (nexts.length) {
+        for (let i = 1; i < nexts.length; i++) executeGraph(sprite, folder, triggerNodeId, nexts[i]);
+        cur = nexts[0];
+        continue;
+      }
+      return;
+    }
+    if (node.kind === "action" && node.type === "WaitRealtime") {
+      // Real wall-clock delay (setTimeout) — IGNORES scene.time.timeScale, so
+      // `SetTimeScale 0 → WaitRealtime → SetTimeScale 1` can schedule its own
+      // unpause. A scene.time timer (like plain Wait) would freeze with the
+      // world at timeScale 0 and never resume. Was previously UNHANDLED here —
+      // WaitRealtime fell through to a no-op, so the chain ran instantly.
+      const secs = Number(resolveOrParam(node, "seconds", edges, nodeById, sprite, 0));
+      const nexts = findExecTargets(node.id, "exec", edges);
+      if (nexts.length && secs > 0) {
+        const state = ATTACHED.get(sprite);
+        let fired = false;
+        const cleanup = () => { if (fired) return; fired = true; clearTimeout(id); state?.waitCleanups.delete(cleanup); };
+        const id = setTimeout(() => {
+          if (fired) return;
+          fired = true;
+          state?.waitCleanups.delete(cleanup);
+          if (sprite.destroyed) return;
+          for (const nx of nexts) executeGraph(sprite, folder, triggerNodeId, nx);
+        }, secs * 1000);
+        state?.waitCleanups.add(cleanup);
       } else if (nexts.length) {
         for (let i = 1; i < nexts.length; i++) executeGraph(sprite, folder, triggerNodeId, nexts[i]);
         cur = nexts[0];

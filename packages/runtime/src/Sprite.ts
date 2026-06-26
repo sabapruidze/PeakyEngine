@@ -390,6 +390,31 @@ export class Sprite {
     return out;
   }
 
+  /** Objects this sprite hid when it froze off-screen (so wake restores only
+   *  what was actually visible, not force-showing an intentionally-hidden one). */
+  private _culledHidden: Phaser.GameObjects.GameObject[] = [];
+  /** Off-screen-cull visibility. The loop cull only hid the HOST rect, leaving
+   *  every overlay (SpriteRenderer image, Text, tracer gfx…) in Phaser's render
+   *  list — so ~N off-screen overlays still pay transform + cull every frame.
+   *  Hiding them lets the renderer skip them outright. */
+  setCullHidden(hidden: boolean): void {
+    if (hidden) {
+      if (this._culledHidden.length) return; // already hidden
+      const hide = (go: Phaser.GameObjects.GameObject | undefined) => {
+        const v = go as unknown as { visible?: boolean; setVisible?: (b: boolean) => void } | undefined;
+        if (v && v.visible && typeof v.setVisible === "function") { this._culledHidden.push(go!); v.setVisible(false); }
+      };
+      hide(this.gameObject);
+      for (const go of this._fxObjects) hide(go);
+    } else {
+      for (const go of this._culledHidden) {
+        const v = go as unknown as { setVisible?: (b: boolean) => void };
+        if (v && typeof v.setVisible === "function") v.setVisible(true);
+      }
+      this._culledHidden.length = 0;
+    }
+  }
+
   routeOverlayToCamera(go: Phaser.GameObjects.GameObject): void {
     if (!this.scene) return;
     this._fxObjects.add(go);
@@ -945,6 +970,12 @@ export class Sprite {
       if (!b.enabled) continue;
       if (paused && !b.tickDuringPause) continue;
       b.update(scaledDelta);
+      // A behavior's update may destroy the sprite (e.g. Projectile's
+      // destroyOnHit). Bail immediately — otherwise a LATER behavior in this
+      // same loop (SpriteRenderer / Text) runs its update and lazily RE-CREATES
+      // the overlay that destroy()'s onDestroy just tore down, leaving a ghost
+      // image on screen after the host is gone.
+      if (this.destroyed) return;
     }
     if (this.destroyed) return;
     // Self-sustaining MoveTo: home toward the snapshotted target at constant

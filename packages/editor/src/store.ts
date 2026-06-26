@@ -216,7 +216,7 @@ interface EditorState {
    *  applies the sampled keyframe values to the chosen target so authors
    *  can see "what this point in the animation looks like" without
    *  running the scene. Cleared on row collapse / animation switch. */
-  animatorPreview: { bpId: string; target: string; mirror: number; offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number } | null;
+  animatorPreview: { bpId: string; target: string; mirror: number; offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number; tint?: number; tintFill?: number } | null;
   setAnimatorPreview: (p: EditorState["animatorPreview"]) => void;
 
   // ---- tilesets ----

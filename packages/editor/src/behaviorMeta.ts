@@ -299,7 +299,8 @@ export const BEHAVIOR_PARAMS: Record<BehaviorKind, BehaviorParamMeta[]> = {
   Projectile: [
     { key: "mode",             label: "Mode", default: "straight", type: "string", options: [
       { value: "straight", label: "Straight-line" },
-      { value: "homing", label: "Homing" },
+      { value: "homing", label: "Homing (tracks)" },
+      { value: "aimed", label: "Aimed (fire at target, no tracking — dodgeable)" },
     ]},
     { key: "speed",            label: "Speed (px/s)",        default: 600 },
     { key: "lifetime",         label: "Lifetime (s, 0=∞)",   default: 3 },

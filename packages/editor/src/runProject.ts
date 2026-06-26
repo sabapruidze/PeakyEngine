@@ -904,8 +904,10 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
     ): void => {
       const bp = findBlueprint(project, sprite.blueprintId ?? "");
       sprite._pooled = false;
-      // Reactivate gameObject + body.
+      // Reactivate gameObject + body, and restore the overlays hidden at pool
+      // time (mirror of deactivateToPool's setCullHidden(true)).
       sprite.gameObject.setActive(true);
+      sprite.setCullHidden(false);
       sprite.gameObject.setVisible(true);
       if (sprite.body) {
         sprite.body.enable = true;
@@ -994,7 +996,12 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // Deactivate visuals + physics. Sprite stays in peaky.sprites so the
       // tick loop iterates it, but Sprite.tick early-returns on _pooled.
       sprite._pooled = true;
-      sprite.gameObject.setVisible(false);
+      // Hide the HOST *and* every overlay (SpriteRenderer image, Text, …).
+      // Hiding only the host rect left a sprite-rendered BP (e.g. a pooled
+      // projectile) with its visible art frozen on screen after destroy()
+      // pooled it — `_pooled` halts the tick so syncOverlay can't move it
+      // either, so it looked like "the bullet stopped but wasn't destroyed".
+      sprite.setCullHidden(true);
       sprite.gameObject.setActive(false);
       if (sprite.body) {
         sprite.body.setVelocity(0, 0);
@@ -1143,7 +1150,12 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // so it interleaves with other Y-sorted sprites and per-row tilemap
       // layers. The pivot defaults to 1 (bottom = "feet") for the topdown
       // convention; BPs can override (e.g. 0.5 = center).
-      if (layer.ySort) {
+      // `ySortExclude` opts a BP OUT of the layer's Y-sort — it keeps a fixed
+      // depth (baseDepth + per-instance z) instead of interleaving by Y. For
+      // decals / FX like blood splats that shouldn't flicker in front of and
+      // behind characters as they move. Use the instance z-order to place it
+      // above (high z) or below (negative z) the Y-sorted sprites.
+      if (layer.ySort && !bp.ySortExclude) {
         sprite._ySortEnabled = true;
         sprite._ySortBaseDepth = baseDepth;
         sprite._ySortPivotY = typeof bp.ySortPivotY === "number" ? bp.ySortPivotY : 1;
@@ -2354,7 +2366,7 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
         // at a specific frame. Builds a fresh timer for the new anim and
         // disposes the old one. Closure captures `asset` so the texture
         // keys resolve correctly.
-        go.setData("peaky.placementSwitchAnim", (animName: string, opts: { loop?: boolean; startFrame?: number } = {}) => {
+        go.setData("peaky.placementSwitchAnim", (animName: string, opts: { loop?: boolean; startFrame?: number; destroyOnFinish?: boolean } = {}) => {
           const newAnim = animName
             ? asset.animations.find((a) => a.name === animName)
             : asset.animations[0];
@@ -2367,7 +2379,18 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
           if (sceneForRegistry.textures.exists(k0)) go.setTexture(k0);
           const fps = Math.max(1, newAnim.fps || 12);
           const frameMsN = Math.max(20, Math.round(1000 / fps));
-          const shouldLoop = opts.loop ?? newAnim.loop;
+          // destroyOnFinish forces a single pass (looping would never "finish")
+          // and tears down the placement when the animation ends — fire-and-forget
+          // one-shot VFX cleanup.
+          const dof = !!opts.destroyOnFinish;
+          const shouldLoop = dof ? false : (opts.loop ?? newAnim.loop);
+          const destroySelf = () => {
+            if (timer) { timer.remove(false); timer = null; }
+            const m = sceneForRegistry.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+            const lst = m?.get(placement.spriteId);
+            if (lst) { const i = lst.indexOf(go); if (i >= 0) lst.splice(i, 1); }
+            go.destroy();
+          };
           const stepNew = () => {
             curIdx = shouldLoop
               ? (curIdx + 1) % newAnim.frames.length
@@ -2378,10 +2401,13 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
               timer = sceneForRegistry.time.delayedCall(frameMsN, stepNew);
             } else {
               timer = null;
+              if (dof) destroySelf();
             }
           };
           if (newAnim.frames.length > 1) {
             timer = sceneForRegistry.time.delayedCall(frameMsN, stepNew);
+          } else if (dof) {
+            timer = sceneForRegistry.time.delayedCall(frameMsN, destroySelf);
           }
         });
         // Optional collider. Placements are Phaser GameObjects (NOT

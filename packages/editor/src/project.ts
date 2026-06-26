@@ -305,6 +305,14 @@ export interface BlueprintDef {
    */
   ySortPivotY?: number;
   /**
+   * When true, instances of this BP IGNORE a Y-sort layer's per-tick depth
+   * recompute — they keep a fixed depth (layer base + per-instance z) instead
+   * of interleaving by world Y. For decals / FX (blood splats, shadows) that
+   * shouldn't flicker in front of / behind characters as everyone moves. Place
+   * above/below the Y-sorted sprites via the instance z-order. Missing = false.
+   */
+  ySortExclude?: boolean;
+  /**
    * When true, the BP's default colored rect is invisible at both edit-time
    * (scene preview) and runtime (Phaser physics rect alpha = 0). Useful for
    * Text-only BPs or pure logic BPs where the rect is just clutter.
@@ -3106,6 +3114,8 @@ export const BEHAVIOR_DEFAULTS: Record<BehaviorKind, Record<string, unknown>> = 
     iframeSec: 0.5,
     hitstunSec: 0.3,
     knockbackMultiplier: 1,
+    blockKnockbackMultiplier: 1,
+    partialKnockbackMultiplier: 1,
     destroyOnDeath: 1,
     deathDestroyDelay: 0.5,
     allowHealing: 1,

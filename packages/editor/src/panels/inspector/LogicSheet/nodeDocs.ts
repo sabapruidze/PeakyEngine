@@ -30,6 +30,7 @@ const FILL: Record<string, [string, string]> = {
   OnDamageTaken: ["Fires the moment this object takes damage.", "On hit → play the hurt animation."],
   OnHealed: ["Fires when this object is healed.", "On heal → flash green."],
   OnBlocked: ["Fires when an incoming attack is blocked (guarding).", "On block → spark + small knockback."],
+  OnPartialBlock: ["Fires when a guarded hit is only PARTIALLY blocked (Guard Multiplier between 0 and 1) — some damage still got through (chip).", "On partial block → small spark + drain stamina."],
   OnDeath: ["Fires when this object's HP hits 0.", "On death → play death anim, then Destroy Self."],
   OnItemAdded: ["Fires when an item enters the inventory.", "Pick up a coin → update the HUD count."],
   OnItemRemoved: ["Fires when an item leaves the inventory.", "Use a potion → refresh the item list."],

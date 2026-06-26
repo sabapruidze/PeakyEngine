@@ -653,7 +653,7 @@ function resolveIdent(sprite: Sprite, ident: string): number | undefined {
  *  OnSpriteObjectCreate broadcast for the next frame. Returns the
  *  GameObject so callers can inspect / mutate further. */
 export function spawnRuntimeSpriteObject(
-  scene: Phaser.Scene, spriteId: string, x: number, y: number,
+  scene: Phaser.Scene, spriteId: string, x: number, y: number, layerName = "",
 ): Phaser.GameObjects.Sprite | null {
   const spritesProj = scene.data.get("peaky.projectSprites") as
     Array<{ id: string; name: string; width: number; height: number;
@@ -679,6 +679,88 @@ export function spawnRuntimeSpriteObject(
   }
   const uiCam = scene.data.get("peaky.uiCam") as Phaser.Cameras.Scene2D.Camera | undefined;
   if (uiCam) uiCam.ignore(go);
+  // Layer binding. When the author picks a scene layer, render inside that
+  // layer's depth band — near the TOP of it (band = 1,000,000 wide), so the FX
+  // draws above that layer's Y-sorted sprites (depth = base + worldY, worldY ≪
+  // 900k) while still respecting the layer stack — and inherit its parallax.
+  // No layer → render above EVERYTHING on the main camera (1e9 clears ~1000
+  // bands); a fire-and-forget spell-hit always draws over the player.
+  // (UI is a separate camera, so this never covers it.)
+  const layers = scene.data.get("peaky.layers") as
+    | Record<string, { parallaxX: number; parallaxY: number; visible: boolean; baseDepth: number }> | undefined;
+  const lyr = layerName ? layers?.[layerName] : undefined;
+  if (lyr) {
+    go.setDepth(lyr.baseDepth + 900_000);
+    go.setScrollFactor(lyr.parallaxX, lyr.parallaxY);
+    if (!lyr.visible) go.setVisible(false);
+  } else {
+    go.setDepth(1_000_000_000);
+  }
+
+  // Animation runner + the data hooks PlayPlacementAnim / SetPlacementFrame
+  // invoke. Mirrors the authored-placement runner in runProject — without these
+  // the Sprite Object sat on a static frame 0 and PlayPlacementAnim was a no-op
+  // (it looks up `peaky.placementSwitchAnim` via getData and found nothing).
+  type AnimT = (typeof asset.animations)[number];
+  const texKey = (a: AnimT, i: number) => `sprite:${asset.id}:${a.id}:${i}`;
+  let curAnim: AnimT = anim;
+  let curIdx = 0;
+  let timer: Phaser.Time.TimerEvent | null = null;
+  // Fire-and-forget VFX cleanup: remove this placement from the per-sprite
+  // index and destroy the GameObject. Used by PlayPlacementAnim's
+  // `destroyOnFinish` so a one-shot spell-hit / explosion cleans itself up.
+  const destroyPlacement = () => {
+    if (timer) { timer.remove(false); timer = null; }
+    const m = scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+    const lst = m?.get(spriteId);
+    if (lst) { const i = lst.indexOf(go); if (i >= 0) lst.splice(i, 1); }
+    go.destroy();
+  };
+  const startTimer = (a: AnimT, loop: boolean, destroyOnFinish = false) => {
+    const fps = Math.max(1, a.fps || 12);
+    const ms = Math.max(20, Math.round(1000 / fps));
+    if (a.frames.length <= 1) {
+      // Single-frame: nothing to animate, but honor destroyOnFinish so a
+      // one-frame VFX still disappears after a beat instead of lingering.
+      if (destroyOnFinish) timer = scene.time.delayedCall(ms, destroyPlacement);
+      return;
+    }
+    const step = () => {
+      curIdx = loop ? (curIdx + 1) % a.frames.length : Math.min(curIdx + 1, a.frames.length - 1);
+      const k = texKey(a, curIdx);
+      if (scene.textures.exists(k)) go.setTexture(k);
+      if (curIdx < a.frames.length - 1 || loop) {
+        timer = scene.time.delayedCall(ms, step);
+      } else {
+        timer = null;
+        if (destroyOnFinish) destroyPlacement();
+      }
+    };
+    timer = scene.time.delayedCall(ms, step);
+  };
+  go.setData("peaky.placementSetFrame", (i: number) => {
+    curIdx = Math.max(0, Math.min(curAnim.frames.length - 1, i));
+    const k = texKey(curAnim, curIdx);
+    if (scene.textures.exists(k)) go.setTexture(k);
+  });
+  go.setData("peaky.placementSetPlaying", (v: boolean) => {
+    if (v && !timer) startTimer(curAnim, !!curAnim.loop);
+    else if (!v && timer) { timer.remove(false); timer = null; }
+  });
+  go.setData("peaky.placementSwitchAnim", (name: string, opts: { loop?: boolean; startFrame?: number; destroyOnFinish?: boolean } = {}) => {
+    const a = name ? asset.animations.find((x) => x.name === name) : asset.animations[0];
+    if (!a || a.frames.length === 0) return;
+    if (timer) { timer.remove(false); timer = null; }
+    curAnim = a;
+    curIdx = Math.max(0, Math.min(a.frames.length - 1, opts.startFrame ?? 0));
+    const k = texKey(a, curIdx);
+    if (scene.textures.exists(k)) go.setTexture(k);
+    // destroyOnFinish forces a single pass (looping would never "finish").
+    startTimer(a, opts.destroyOnFinish ? false : (opts.loop ?? !!a.loop), !!opts.destroyOnFinish);
+  });
+  // Auto-play the default animation so a create-only effect still animates.
+  startTimer(curAnim, !!curAnim.loop);
+
   const idx = (scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined) ?? new Map();
   const list = idx.get(spriteId) ?? [];
   list.push(go);
@@ -2643,6 +2725,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const scale = Math.max(0, numOr(cfg.scale, 0, sprite));
       const affectPhysics = cfg.affectPhysics !== false;     // default on
       const affectParticles = cfg.affectParticles !== false; // default on
+      const affectSmartTween = cfg.affectSmartTween !== false; // default on
       const scene = sprite.scene;
       const now = scene.game.loop.time;
       // Already frozen → extend the active window.
@@ -2664,6 +2747,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       scene.data.set("peaky.hitstopScale", scale);
       scene.data.set("peaky.hitstopAffectPhysics", affectPhysics);
       scene.data.set("peaky.hitstopAffectParticles", affectParticles);
+      scene.data.set("peaky.hitstopAffectSmartTween", affectSmartTween);
       break;
     }
     case "SetPaused": {
@@ -2860,7 +2944,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       // V1 doesn't budget-gate it. (15K-spawn freeze is acceptable for
       // now; budgeting would defer the GameObject creation and break
       // any chain that immediately addresses the placement.)
-      spawnRuntimeSpriteObject(sprite.scene, spriteId, x, y);
+      spawnRuntimeSpriteObject(sprite.scene, spriteId, x, y, strOr(cfg.layer, "", sprite));
       break;
     }
     case "DestroySpriteObject": {
@@ -3079,10 +3163,11 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           const animName = String(cfg.animation ?? "").trim();
           if (animName) {
             const fn = go.getData("peaky.placementSwitchAnim") as
-              ((name: string, opts: { loop?: boolean; startFrame?: number }) => void) | undefined;
+              ((name: string, opts: { loop?: boolean; startFrame?: number; destroyOnFinish?: boolean }) => void) | undefined;
             if (fn) fn(animName, {
               loop: cfg.loop !== false,
               startFrame: numOr(cfg.startFrame, 0, sprite),
+              destroyOnFinish: cfg.destroyOnFinish === true,
             });
           } else {
             const fn = go.getData("peaky.placementSetPlaying") as ((v: boolean) => void) | undefined;
@@ -3228,7 +3313,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const spawned = spawn({ name: bpName, x, y }, { immediate: true });
       if (!spawned) break;
       const proj = spawned.findBehaviorByKind("Projectile") as
-        | (Record<string, unknown> & { mode?: "straight" | "homing"; launch: (a: number, s?: number, t?: number) => void })
+        | (Record<string, unknown> & { mode?: "straight" | "homing" | "aimed"; launch: (a: number, s?: number, t?: number) => void })
         | undefined;
       if (!proj) {
         console.warn(`[FireProjectile] BP "${bpName}" has no Projectile behavior — bullet will sit still. Attach Projectile in the BP inspector.`);
@@ -3250,7 +3335,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       // and str() expect numeric / arbitrary strings. straight | homing.
       if (numOr(cfg.ovrMode, 0, sprite)) {
         const m = String(cfg.mode ?? "straight");
-        if (m === "homing" || m === "straight") proj.mode = m;
+        if (m === "homing" || m === "straight" || m === "aimed") proj.mode = m;
       }
       num("ovrSpeed", "speed");
       num("ovrLifetime", "lifetime");
@@ -3266,16 +3351,14 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       num("ovrHitboxW", "hitboxW");
       num("ovrHitboxH", "hitboxH");
       num("ovrHomingTurnRate", "homingTurnRate");
-      // Compute initial firing angle. In HOMING mode, aim straight at the
-      // nearest target sprite carrying any of `targetTags` so the bullet
-      // doesn't have to fight its limited turn rate from a 90° wrong
-      // start. This mirrors what Projectile._resolveTarget will do every
-      // tick — we just snapshot it once at fire time for the initial
-      // heading. STRAIGHT mode falls back to facing direction (the
-      // pre-homing default), so a bullet without homing still fires
-      // forward as before.
+      // Compute initial firing angle. In HOMING and AIMED modes, aim straight at
+      // the nearest target sprite carrying any of `targetTags`. Homing keeps
+      // tracking after this snapshot; AIMED locks this heading and flies
+      // straight (no tracking) so the player can side-step it — the classic
+      // top-down shot. STRAIGHT mode falls back to facing direction.
       let rad = facing < 0 ? Math.PI : 0;
-      if (proj.mode === "homing") {
+      if (proj.mode === "homing" || proj.mode === "aimed") {
+        const mode = proj.mode;
         const tagsStr = String((proj as Record<string, unknown>).targetTags ?? "");
         const tags = tagsStr.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean);
         if (tags.length > 0) {
@@ -3299,12 +3382,15 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           if (bestSprite) {
             rad = Math.atan2(bestSprite.gameObject.y - y, bestSprite.gameObject.x - x);
           } else {
-            console.warn(`[FireProjectile] homing bullet "${bpName}" found no sprite carrying any of [${tags.join(", ")}]. Firing in facing direction; bullet will home-search live each tick once it spawns.`);
+            console.warn(`[FireProjectile] ${mode} bullet "${bpName}" found no sprite carrying any of [${tags.join(", ")}]. Firing in the facing direction instead.`);
           }
         } else {
-          console.warn(`[FireProjectile] homing bullet "${bpName}" has empty targetTags. Set targetTags on the BP's Projectile component (e.g. "player") so the bullet knows what to chase.`);
+          console.warn(`[FireProjectile] ${mode} bullet "${bpName}" has empty targetTags. Set targetTags on the BP's Projectile component (e.g. "player") so it knows what to aim at.`);
         }
       }
+      // Stamp the shooter so the collision-based destroyOnHit doesn't fire on
+      // the sprite the bullet spawns on top of.
+      (proj as Record<string, unknown>).ownerUid = sprite.uid;
       // launch() reads the (possibly-overridden) proj.speed itself, so we
       // pass undefined and let the Projectile use its own field.
       proj.launch(rad);

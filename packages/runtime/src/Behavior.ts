@@ -149,7 +149,8 @@ export const BEHAVIOR_WRITABLE_PARAMS: Record<keyof BehaviorKindMap, ReadonlySet
     "blendMode", "frameMode", "frameIndices",
   ]),
   Damageable: new Set<string>([
-    "hp", "maxHp", "hpVar", "maxHpVar", "iframeSec", "hitstunSec", "knockbackMultiplier",
+    "hp", "maxHp", "hpVar", "maxHpVar", "iframeSec", "hitstunSec",
+    "knockbackMultiplier", "blockKnockbackMultiplier", "partialKnockbackMultiplier",
     "destroyOnDeath", "deathDestroyDelay", "allowHealing", "attackable",
     "blockStates", "guardMultiplier", "guarding",
   ]),

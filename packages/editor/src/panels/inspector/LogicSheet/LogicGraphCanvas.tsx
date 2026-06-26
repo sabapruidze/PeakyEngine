@@ -175,7 +175,7 @@ const ENUM_OPTIONS: Record<string, readonly string[]> = {
   // Shop role (Set UI Element on a Label/Button).
   shopRole: ["name", "buyPrice", "sellPrice", "buy", "sell"],
   // Projectile.mode override on FireProjectile.
-  mode: ["straight", "homing"],
+  mode: ["straight", "homing", "aimed"],
 };
 
 /** A pickable UI-widget target for the `target` dropdown. `value` is what the
@@ -1032,7 +1032,12 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
   // box w/h are all ignored (tracer > w/h > self-hitbox) — hide them.
   const hideMineXY = (data.nodeType === "MineTileAtWorld" || data.nodeType === "DamageTileAtWorld")
     && String(params.tracer ?? "") !== "";
-  const paramKeys = Object.keys(params).filter((k) =>
+  // Merge the action's CANONICAL param schema (ACTION_DEFAULTS) with the node's
+  // saved params, so a newly-added field (e.g. PlayPlacementAnim.destroyOnFinish)
+  // shows up on nodes that were placed BEFORE the field existed — without a
+  // migration or forcing the author to delete/re-add the node.
+  const actionDefaultsForType = (ACTION_DEFAULTS as Record<string, Record<string, unknown>>)[data.nodeType] ?? {};
+  const paramKeys = Array.from(new Set([...Object.keys(params), ...Object.keys(actionDefaultsForType)])).filter((k) =>
     k !== "spawnVars" // rendered by the dedicated spawn-var editor below
     && (!hasOverrideToggle || overrideOn || ALWAYS_VISIBLE_WHEN_OVERRIDE_OFF.has(k))
     && !(hideVisibleForToggle && k === "visible")
@@ -1106,7 +1111,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
   ];
   return (
     <div style={{
-      minWidth: 220, fontSize: 11, color: "#fff",
+      minWidth: 220, maxWidth: 244, fontSize: 11, color: "#fff",
       border: selected
         ? "2px solid #ffcd3c"
         : "1px solid rgba(255,255,255,0.2)",
@@ -1159,7 +1164,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
             cursor: "pointer", fontSize: 9,
           }}
         >{collapsed ? "▸" : "▾"}</button>
-        <span style={{ flex: 1, fontSize: collapsed ? 13 : undefined }}>{LABEL_OVERRIDES[data.label] ?? data.label}</span>
+        <span title={LABEL_OVERRIDES[data.label] ?? data.label} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: collapsed ? 13 : undefined }}>{LABEL_OVERRIDES[data.label] ?? data.label}</span>
         {/* Component chip — tells the author "this node lives on
             <component>". Trigger gets a Trigger chip; flow/util nodes
             get the generic Flow chip. SVG icon prefix (if the chip's
@@ -1179,10 +1184,14 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
             display: "inline-flex",
             alignItems: "center",
             gap: 4,
+            maxWidth: 96,
+            minWidth: 0,
+            overflow: "hidden",
+            flexShrink: 0,
           }}
         >
-          <ComponentIcon kind={data.componentLabel} size={11} style={{ filter: "brightness(0.2)" }} />
-          {data.componentLabel}
+          <ComponentIcon kind={data.componentLabel} size={11} style={{ filter: "brightness(0.2)", flexShrink: 0 }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{data.componentLabel}</span>
         </span>
         {!isTrigger && (
           <button
@@ -1199,6 +1208,21 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
           >×</button>
         )}
       </div>
+      {/* When COLLAPSED, still render the handles for any WIRED input pins —
+          xyflow drops an edge whose endpoint handle no longer exists, so hiding
+          the body would silently disconnect wired values. This keeps just those
+          pins (label + handle) visible so the wires survive a collapse. */}
+      {collapsed && data.inData.some((p) => wiredPins.has(p.pin)) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 10px 4px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+          {data.inData.filter((p) => wiredPins.has(p.pin)).map((p) => (
+            <div key={p.pin} style={{ position: "relative", paddingLeft: 16, minHeight: 14, display: "flex", alignItems: "center", fontSize: 9, color: "#7fd0ff", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              <Handle type="target" position={Position.Left} id={p.pin}
+                style={{ background: PIN_COLORS[p.type] ?? PIN_COLORS.exec, width: 8, height: 8, border: "1px solid #000" }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{paramLabel(p.pin, data.nodeType)} (wired)</span>
+            </div>
+          ))}
+        </div>
+      )}
       {!collapsed && !isSetUIElement && !isFireProjectile && (paramKeys.length > 0 || data.inData.length > 0) && (
         <div style={{
           padding: "8px 10px 8px 0", display: "flex", flexDirection: "column", gap: 6,
@@ -1238,7 +1262,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
                 ) : (
                   <ParamField
                     paramKey={k}
-                    value={params[k]}
+                    value={k in params ? params[k] : actionDefaultsForType[k]}
                     {...sharedParamProps}
                     onChange={(v) => onParamChange(nodeId, { [k]: v })}
                   />
@@ -1356,7 +1380,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
                 ) : (
                   <ParamField
                     paramKey={k}
-                    value={params[k]}
+                    value={k in params ? params[k] : actionDefaultsForType[k]}
                     {...sharedParamProps}
                     onChange={(v) => onParamChange(nodeId, { [k]: v })}
                   />
@@ -2772,6 +2796,13 @@ function pickDropdown(
         const anims = opts.spriteAnimsById[sid] ?? [];
         return anims.length > 0 ? { options: anims, placeholder: "weapon anim" } : null;
       }
+      // Sprite Object animation actions play the chosen sprite asset's anims
+      // (sibling `spriteId`), NOT the host body's SpriteRenderer animations.
+      if (opts.nodeType === "PlayPlacementAnim") {
+        const sid = String(siblingParams.spriteId ?? "");
+        const anims = opts.spriteAnimsById[sid] ?? [];
+        return anims.length > 0 ? { options: anims, placeholder: "animation" } : null;
+      }
       return opts.animOptions.length > 0 ? { options: opts.animOptions, placeholder: "animation" } : null;
     case "name":
       // Polymorphic by node type. GoToLayout / GoToLayoutWithLoad / SetLoadingScene
@@ -3289,7 +3320,24 @@ export function LogicGraphCanvas({ folder, bp, onChange }: LogicGraphCanvasProps
       }
     }
     addGroup("Emitted by blueprints", bpSig, (n) => bpSrc[n] ?? "Blueprint");
-    const all = Array.from(new Set([...declared, ...tile, ...bpSig]));
+    // Component-emitted signals — free-text fields on behaviors (Projectile's
+    // Hit Signal / Tile Hit Signal). Without scanning these, a bullet's hit
+    // signal never shows up in another BP's OnSignal picker, so the author
+    // can't even select it.
+    const compSig: string[] = [];
+    const compSrc: Record<string, string> = {};
+    for (const b of blueprints) {
+      for (const beh of b.behaviors ?? []) {
+        if (beh.kind !== "Projectile") continue;
+        const cfg = beh.config as Record<string, unknown>;
+        const hs = String(cfg?.hitSignal ?? "").trim();
+        if (hs) { compSig.push(hs); compSrc[hs] ??= `Blueprint "${b.name}" · Projectile hit`; }
+        const ths = String(cfg?.tileHitSignal ?? "").trim();
+        if (ths) { compSig.push(ths); compSrc[ths] ??= `Blueprint "${b.name}" · Projectile tile hit`; }
+      }
+    }
+    addGroup("Component signals", compSig, (n) => compSrc[n] ?? "Component signal");
+    const all = Array.from(new Set([...declared, ...tile, ...bpSig, ...compSig]));
     return { all, sources, groups };
   }, [signals, tilesets, blueprints]);
   const signalNames = signalCatalog.all;
@@ -4858,6 +4906,7 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "OnDamageTaken",     kind: "trigger", label: "On Damage Taken",    defaults: {} },
       { type: "OnHealed",          kind: "trigger", label: "On Healed",          defaults: {} },
       { type: "OnBlocked",         kind: "trigger", label: "On Blocked",         defaults: {} },
+      { type: "OnPartialBlock",    kind: "trigger", label: "On Partial Block",   defaults: {} },
       { type: "OnDeath",           kind: "trigger", label: "On Death",           defaults: {} },
       { type: "OnItemAdded",       kind: "trigger", label: "On Item Added",      defaults: {} },
       { type: "OnItemRemoved",     kind: "trigger", label: "On Item Removed",    defaults: {} },
@@ -4959,7 +5008,7 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "SetLoadingScene",   kind: "action", label: "Set Loading Scene (one-shot override)", defaults: { name: "" } },
       { type: "SetPlacementVisible",kind: "action",label: "Set Sprite Object Visible",   defaults: { spriteId: "", visible: true } },
       { type: "SetPlacementFrame", kind: "action", label: "Set Sprite Object Frame",     defaults: { spriteId: "", frame: 0 } },
-      { type: "PlayPlacementAnim", kind: "action", label: "Play Sprite Object Animation",defaults: { spriteId: "", animation: "", loop: true, startFrame: 0 } },
+      { type: "PlayPlacementAnim", kind: "action", label: "Play Sprite Object Animation",defaults: { spriteId: "", animation: "", loop: true, startFrame: 0, destroyOnFinish: false } },
       { type: "StopPlacementAnim", kind: "action", label: "Stop Sprite Object Animation",defaults: { spriteId: "" } },
       { type: "SetPlacementPos",   kind: "action", label: "Set Sprite Object Position",  defaults: { spriteId: "", x: 0, y: 0 } },
       { type: "CreateSpriteObject",kind: "action", label: "Create Sprite Object",        defaults: { spriteId: "", x: 0, y: 0 } },

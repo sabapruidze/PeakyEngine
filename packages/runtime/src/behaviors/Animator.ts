@@ -45,6 +45,10 @@ export interface AnimatorKeyframe {
   scale: number;
   opacity: number;
   rotation: number;
+  /** Optional tint color (0xRRGGBB), lerped across keyframes and applied to the
+   *  target's sprite. -1 / undefined = no tint contribution (clears any). Lets
+   *  a SmartTween flash red on hit, fade to grey on death, etc. */
+  tint?: number;
   /** Optional signal emitted on the host's event bus when the playhead
    *  CROSSES this keyframe's time (edge — once per pass, re-armed each
    *  loop). Lets a SmartTween fire a hit-signal at the exact pose its
@@ -73,6 +77,10 @@ export interface AnimatorAnimation {
    *  right" animation also play correctly when the character faces left
    *  (the swing arcs in the opposite direction). 0 = never mirror. */
   mirror?: number;
+  /** When 1, the tint is applied as a SOLID FILL (Phaser setTintFill) instead
+   *  of a multiply — the sprite becomes a flat silhouette of the tint color, so
+   *  a WHITE tint = a full-white flash. 0 / missing = multiply (default). */
+  tintFill?: number;
 }
 
 interface PlayState {
@@ -93,6 +101,24 @@ interface AnimSample {
   scale: number;
   opacity: number;
   rotation: number;
+  /** 0xRRGGBB tint, or -1 for "no tint contribution". */
+  tint: number;
+  /** When true, apply the tint as a solid fill (setTintFill) — white = flash. */
+  tintFill?: boolean;
+}
+
+/** Lerp two tint colors per RGB channel. A -1 endpoint ("no tint") is treated
+ *  as white (0xffffff, the neutral tint) so fades to/from "no tint" look right.
+ *  When BOTH ends are -1, the result is -1 (no tint at all). */
+function lerpTint(a: number, b: number, t: number): number {
+  if (a < 0 && b < 0) return -1;
+  const ca = a < 0 ? 0xffffff : a, cb = b < 0 ? 0xffffff : b;
+  const ar = (ca >> 16) & 0xff, ag = (ca >> 8) & 0xff, ab = ca & 0xff;
+  const br = (cb >> 16) & 0xff, bg = (cb >> 8) & 0xff, bb = cb & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | bl;
 }
 
 /** Identity values written to the target's buffer when no animation is
@@ -106,7 +132,7 @@ interface AnimSample {
  *  clamp every animator-driven alpha to 0 too. */
 const IDENTITY: AnimSample = Object.freeze({
   offsetX: 0, offsetY: 0,
-  scale: 1, opacity: -1, rotation: 0,
+  scale: 1, opacity: -1, rotation: 0, tint: -1,
 });
 
 export class Animator extends Behavior {
@@ -122,6 +148,12 @@ export class Animator extends Behavior {
    *  it). 0,0 = scale from the frame pivot (default / legacy). */
   scalePivotX = 0;
   scalePivotY = 0;
+
+  /** -1 = follow the global timeScale (default). >= 0 = run on the RAW frame
+   *  delta at this scale instead — set by a HitStop with `affectSmartTween`
+   *  OFF so the tween keeps playing THROUGH the freeze (e.g. a white flash). */
+  private _simScaleOverride = -1;
+  setSimTimeScale(n: number): void { this._simScaleOverride = n; }
 
   /** Scaled sim-time accumulator (seconds). Advanced by the timeScale-
    *  adjusted delta each tick so playback honors SetTimeScale (slow-mo,
@@ -256,14 +288,19 @@ export class Animator extends Behavior {
   update(_delta: number): void {
     // Advance the scaled sim clock every tick (BEFORE the early return so
     // it stays continuous). `_delta` is already timeScale-adjusted by
-    // Sprite.tick, so this freezes on pause and slows in slow-mo.
-    this._simTime += _delta / 1000;
+    // Sprite.tick, so this freezes on pause and slows in slow-mo — UNLESS a
+    // HitStop set an override (affectSmartTween OFF), in which case we run off
+    // the raw frame delta so the tween plays through the freeze.
+    const dt = this._simScaleOverride >= 0
+      ? (this.sprite?.scene?.game?.loop?.delta ?? 0) * this._simScaleOverride
+      : _delta;
+    this._simTime += dt / 1000;
     if (this._playing.size === 0 && this._activeTargets.size === 0) return;
 
     // Per-target accumulated values for this tick — keyed by the target
     // identifier the animation declared. Multiple anims on the same target
     // overwrite (last-write-wins) since the animator doesn't blend.
-    const buf = new Map<string, { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number }>();
+    const buf = new Map<string, { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number; tint: number; tintFill?: boolean }>();
     // Scaled sim clock (see play()) — keeps SmartTween in lockstep with
     // SetTimeScale so keyframe playback + per-keyframe signals slow / pause
     // with the rest of the game instead of running at real wall-clock time.
@@ -299,7 +336,7 @@ export class Animator extends Behavior {
             const vals = {
               offsetX: last.offsetX * sign, offsetY: last.offsetY,
               scale: last.scale, opacity: last.opacity,
-              rotation: last.rotation * sign,
+              rotation: last.rotation * sign, tint: last.tint ?? -1, tintFill: !!a.tintFill,
             };
             buf.set(a.target, vals);
             this._pinned.set(a.target, vals);
@@ -334,6 +371,7 @@ export class Animator extends Behavior {
       ps.prevElapsed = elapsed < prev ? -1 : elapsed;
 
       const sample = this.sampleKeyframes(a, elapsed);
+      sample.tintFill = !!a.tintFill;
       const sign = this._mirrorSign(a);
       if (sign !== 1) {
         sample.offsetX *= sign;
@@ -385,7 +423,7 @@ export class Animator extends Behavior {
     if (kfs.length === 0) return { ...IDENTITY };
     if (kfs.length === 1) {
       const k = kfs[0];
-      return { offsetX: k.offsetX, offsetY: k.offsetY, scale: k.scale, opacity: k.opacity, rotation: k.rotation };
+      return { offsetX: k.offsetX, offsetY: k.offsetY, scale: k.scale, opacity: k.opacity, rotation: k.rotation, tint: k.tint ?? -1 };
     }
     // Find the keyframe pair surrounding `elapsed`. Assumes kfs are sorted
     // by time ascending — editor enforces; runtime falls back to linear
@@ -397,7 +435,7 @@ export class Animator extends Behavior {
     }
     if (i >= kfs.length - 1) {
       const k = kfs[kfs.length - 1];
-      return { offsetX: k.offsetX, offsetY: k.offsetY, scale: k.scale, opacity: k.opacity, rotation: k.rotation };
+      return { offsetX: k.offsetX, offsetY: k.offsetY, scale: k.scale, opacity: k.opacity, rotation: k.rotation, tint: k.tint ?? -1 };
     }
     const k0 = kfs[i];
     const k1 = kfs[i + 1];
@@ -410,6 +448,7 @@ export class Animator extends Behavior {
       scale:    k0.scale    + (k1.scale    - k0.scale)    * e,
       opacity:  k0.opacity  + (k1.opacity  - k0.opacity)  * e,
       rotation: k0.rotation + (k1.rotation - k0.rotation) * e,
+      tint:     lerpTint(k0.tint ?? -1, k1.tint ?? -1, e),
     };
   }
 
@@ -439,7 +478,13 @@ export class Animator extends Behavior {
   /** Push the per-tick buffer values into the chosen target. Each target
    *  type knows which fields to write — Text/Widget have explicit anim
    *  buffer slots; "host" writes directly to the gameObject. */
-  private writeToTarget(target: string, v: { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number }): void {
+  private writeToTarget(target: string, v: { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number; tint: number; tintFill?: boolean }): void {
+    // Keyframe rotation is authored in DEGREES (the editor field + the scrub
+    // preview both treat it as degrees). The runtime consumers add `animRotation`
+    // straight onto Phaser's `rotation`, which is RADIANS — so without this
+    // conversion a "15" became 15 radians (~859°) and the sprite spun fast past
+    // 360°. Convert once here so every target gets radians.
+    const animRotRad = v.rotation * Math.PI / 180;
     if (target === "host") {
       // Host = "the whole BP's visuals." Broadcasts the same buffer values
       // into EVERY visual component on this sprite — SpriteRenderer, Text,
@@ -455,7 +500,7 @@ export class Animator extends Behavior {
       // component's anim buffer so multi-component BPs all animate.
       const sr = this.sprite.findBehaviorByKind("SpriteRenderer") as unknown as {
         animOffsetX?: number; animOffsetY?: number;
-        animScale?: number; animOpacity?: number; animRotation?: number;
+        animScale?: number; animOpacity?: number; animRotation?: number; animTint?: number; animTintFill?: boolean;
         animScalePivotX?: number; animScalePivotY?: number;
       } | undefined;
       if (sr) {
@@ -463,20 +508,23 @@ export class Animator extends Behavior {
         sr.animOffsetY = v.offsetY;
         sr.animScale = v.scale;
         sr.animOpacity = v.opacity;
-        sr.animRotation = v.rotation;
+        sr.animRotation = animRotRad;
+        sr.animTint = v.tint;
+        sr.animTintFill = !!v.tintFill;
         sr.animScalePivotX = this.scalePivotX;
         sr.animScalePivotY = this.scalePivotY;
       }
       const texts = this.sprite.findBehaviorsByKind("Text") as unknown as Array<{
         animOffsetX?: number; animOffsetY?: number;
-        animScale?: number; animOpacity?: number; animRotation?: number;
+        animScale?: number; animOpacity?: number; animRotation?: number; animTint?: number;
       }>;
       for (const t of texts) {
         t.animOffsetX = v.offsetX;
         t.animOffsetY = v.offsetY;
         t.animScale = v.scale;
         t.animOpacity = v.opacity;
-        t.animRotation = v.rotation;
+        t.animRotation = animRotRad;
+        t.animTint = v.tint;
       }
       const w = this.sprite.findBehaviorByKind("Widget") as unknown as {
         animOffsetX?: number; animOffsetY?: number;
@@ -487,7 +535,7 @@ export class Animator extends Behavior {
         w.animOffsetY = v.offsetY;
         w.animScale = v.scale;
         w.animOpacity = v.opacity;
-        w.animRotation = v.rotation;
+        w.animRotation = animRotRad;
       }
       // Body scaling — host target represents the WHOLE BP, so a scale
       // animation should resize the collision rect too. Without this a
@@ -510,7 +558,7 @@ export class Animator extends Behavior {
     const colon = target.indexOf(":");
     const kind = colon >= 0 ? target.slice(0, colon) : target;
     const wantName = colon >= 0 ? target.slice(colon + 1) : "";
-    let b: { name?: string; animOffsetX?: number; animOffsetY?: number; animScale?: number; animOpacity?: number; animRotation?: number; animScalePivotX?: number; animScalePivotY?: number } | undefined;
+    let b: { name?: string; animOffsetX?: number; animOffsetY?: number; animScale?: number; animOpacity?: number; animRotation?: number; animTint?: number; animTintFill?: boolean; animScalePivotX?: number; animScalePivotY?: number } | undefined;
     if (wantName) {
       // Multi-instance lookup — scan all behaviors of this kind, pick
       // the one whose `name` field matches. Falls back to first-found
@@ -525,7 +573,9 @@ export class Animator extends Behavior {
     b.animOffsetY = v.offsetY;
     b.animScale = v.scale;
     b.animOpacity = v.opacity;
-    b.animRotation = v.rotation;
+    b.animRotation = animRotRad;
+    b.animTint = v.tint;
+    b.animTintFill = !!v.tintFill;
     b.animScalePivotX = this.scalePivotX;
     b.animScalePivotY = this.scalePivotY;
   }

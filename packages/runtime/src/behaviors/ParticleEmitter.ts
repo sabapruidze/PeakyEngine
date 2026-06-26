@@ -336,6 +336,14 @@ export class ParticleEmitter extends Behavior {
       this._lastSyncY = pos.y;
     }
 
+    // Depth sync — follow the host's CURRENT depth every tick so renderOrder
+    // ("front"/"back") holds even on a Y-SORT layer, where the host's depth is
+    // recomputed each tick from its world Y. Set once at init, the emitter
+    // depth would fall behind a Y-sorting host and "front" particles would slip
+    // BEHIND the sprite. (Mirrors SpriteRenderer.syncOverlay's depth follow.)
+    const wantDepth = this.sprite.gameObject.depth + (this.renderOrder === "back" ? -10 : 10);
+    if (this._phaserEmitter.depth !== wantDepth) this._phaserEmitter.setDepth(wantDepth);
+
     // Honor start-delay. Once the delay has elapsed, mark ready and
     // either start continuous emission OR auto-fire one burst (burst mode).
     if (!this._readyToEmit) {

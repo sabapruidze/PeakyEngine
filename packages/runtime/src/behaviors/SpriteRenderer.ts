@@ -100,6 +100,12 @@ export class SpriteRenderer extends Behavior {
    *  Animator.ts for why opacity uses a sentinel instead of multiplying. */
   animOpacity = -1;
   animRotation = 0;
+  /** -1 = no Animator tint contribution (clear any tint). 0xRRGGBB = apply that
+   *  tint to the overlay. Driven by SmartTween tint keyframes. */
+  animTint = -1;
+  /** When true, the Animator tint is a solid FILL (setTintFill) — white = a
+   *  full-white flash — instead of a multiply. Driven by the tween's tint mode. */
+  animTintFill = false;
 
   /** Injected by runProject: per-animation runtime data keyed by name. */
   _animations: Record<string, SpriteAnimRuntime> = {};
@@ -615,6 +621,12 @@ export class SpriteRenderer extends Behavior {
     // When set (>=0) it OVERRIDES the layer alpha entirely so an author
     // who started the sprite at alpha=0 can fade it back in via animator.
     this.overlay.setAlpha(this.animOpacity < 0 ? this._layerAlpha : this.animOpacity * this._layerAlpha);
+    // Animator tint (SmartTween tint keyframes). -1 = no contribution → clear
+    // any tint. Fill mode = solid silhouette (white = flash); else multiply.
+    const ov = this.overlay as unknown as { setTint?: (c: number) => void; setTintFill?: (c: number) => void; clearTint?: () => void };
+    if (this.animTint < 0) ov.clearTint?.();
+    else if (this.animTintFill) ov.setTintFill?.(this.animTint);
+    else ov.setTint?.(this.animTint);
     // Mirror depth from the body so SetZOrder / SetDepth actions on the
     // body propagate to the rendered sprite. +1 keeps the visual above
     // the (typically invisible) body rect within the same layer band.

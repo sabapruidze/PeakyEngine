@@ -172,6 +172,10 @@ export function BlueprintIdentitySection({ bp }: { bp: BlueprintDef }) {
           onChange={(e) => update(bp.id, { ySortPivotY: Math.max(0, Math.min(1, Number(e.target.value) || 0)) })}
         />
       </div>
+      <div className="field" title="When on, this BP ignores the layer's Y-sort — it keeps a fixed depth instead of interleaving by Y. For decals / FX like blood splats that shouldn't flicker in front of and behind characters. Use the instance Z-order to place it above (high Z) or below (negative Z) the Y-sorted sprites.">
+        <label>Exclude Y-sort</label>
+        <Toggle value={!!bp.ySortExclude} onChange={(v) => update(bp.id, { ySortExclude: v || undefined })} />
+      </div>
     </div>
   );
 }
@@ -492,6 +496,9 @@ export function GenericComponentCard({
             // eslint-disable-next-line eqeqeq
             if (depVal != p.dependsOn.value) return null;
           }
+          if (behavior.kind === "Damageable" && p.key === "knockbackMultiplier") {
+            return <KnockbackTriple key={p.key} cfg={cfg} onUpdate={onUpdate} />;
+          }
           if (p.comingSoon) {
             return (
               <Fragment key={p.key}>
@@ -538,6 +545,39 @@ export function GenericComponentCard({
           );
         })
       ))}
+    </div>
+  );
+}
+
+// Damageable's three knockback multipliers, laid out side by side with a
+// small hint under each so authors see at a glance which case each one drives.
+export function KnockbackTriple({
+  cfg, onUpdate,
+}: {
+  cfg: Record<string, unknown>;
+  onUpdate: (cfg: Record<string, unknown>) => void;
+}) {
+  const cols: { key: string; hint: string }[] = [
+    { key: "knockbackMultiplier", hint: "for damage" },
+    { key: "blockKnockbackMultiplier", hint: "for block" },
+    { key: "partialKnockbackMultiplier", hint: "for partial" },
+  ];
+  return (
+    <div className="field" style={{ gridTemplateColumns: "100px 1fr", alignItems: "start" }}>
+      <label>Knockback ×</label>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+        {cols.map((c) => (
+          <div key={c.key} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <NumberField
+              value={typeof cfg[c.key] === "number" ? (cfg[c.key] as number) : 1}
+              onChange={(v) => onUpdate({ ...cfg, [c.key]: v })}
+              step="any"
+              style={{ fontSize: 11 }}
+            />
+            <span style={{ fontSize: 10, color: "var(--text-dim)", textAlign: "center" }}>{c.hint}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1878,12 +1918,23 @@ function easeT(name: string, t: number): number {
  *  interpolated transform values. Returns identity when no keyframes
  *  exist. Used by the scrub-preview slider so authors can scrub to any
  *  point in the animation and see the resulting pose live. */
-function sampleAnimAtTime(a: { keyframes: KFRow[]; easing: string }, time: number): { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number } {
+/** Per-RGB-channel lerp of two tint colors (mirrors the runtime's lerpTint).
+ *  A -1 ("no tint") endpoint counts as white so fades to/from it look right;
+ *  both -1 → -1 (no tint at all). */
+function lerpTintHex(a: number | undefined, b: number | undefined, t: number): number {
+  const av = a ?? -1, bv = b ?? -1;
+  if (av < 0 && bv < 0) return -1;
+  const ca = av < 0 ? 0xffffff : av, cb = bv < 0 ? 0xffffff : bv;
+  const ar = (ca >> 16) & 0xff, ag = (ca >> 8) & 0xff, ab = ca & 0xff;
+  const br = (cb >> 16) & 0xff, bg = (cb >> 8) & 0xff, bb = cb & 0xff;
+  return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+}
+function sampleAnimAtTime(a: { keyframes: KFRow[]; easing: string }, time: number): { offsetX: number; offsetY: number; scale: number; opacity: number; rotation: number; tint: number } {
   const kfs = a.keyframes;
-  if (kfs.length === 0) return { offsetX: 0, offsetY: 0, scale: 1, opacity: 1, rotation: 0 };
-  if (time <= kfs[0].time) return { offsetX: kfs[0].offsetX, offsetY: kfs[0].offsetY, scale: kfs[0].scale, opacity: kfs[0].opacity, rotation: kfs[0].rotation };
+  if (kfs.length === 0) return { offsetX: 0, offsetY: 0, scale: 1, opacity: 1, rotation: 0, tint: -1 };
+  if (time <= kfs[0].time) return { offsetX: kfs[0].offsetX, offsetY: kfs[0].offsetY, scale: kfs[0].scale, opacity: kfs[0].opacity, rotation: kfs[0].rotation, tint: kfs[0].tint ?? -1 };
   const last = kfs[kfs.length - 1];
-  if (time >= last.time) return { offsetX: last.offsetX, offsetY: last.offsetY, scale: last.scale, opacity: last.opacity, rotation: last.rotation };
+  if (time >= last.time) return { offsetX: last.offsetX, offsetY: last.offsetY, scale: last.scale, opacity: last.opacity, rotation: last.rotation, tint: last.tint ?? -1 };
   for (let i = 0; i < kfs.length - 1; i++) {
     const k0 = kfs[i], k1 = kfs[i + 1];
     if (time >= k0.time && time <= k1.time) {
@@ -1896,10 +1947,11 @@ function sampleAnimAtTime(a: { keyframes: KFRow[]; easing: string }, time: numbe
         scale:   k0.scale   + (k1.scale   - k0.scale)   * t,
         opacity: k0.opacity + (k1.opacity - k0.opacity) * t,
         rotation: k0.rotation + (k1.rotation - k0.rotation) * t,
+        tint:    lerpTintHex(k0.tint, k1.tint, t),
       };
     }
   }
-  return { offsetX: 0, offsetY: 0, scale: 1, opacity: 1, rotation: 0 };
+  return { offsetX: 0, offsetY: 0, scale: 1, opacity: 1, rotation: 0, tint: -1 };
 }
 
 interface KFRow {
@@ -1909,6 +1961,8 @@ interface KFRow {
   scale: number;
   opacity: number;
   rotation: number;
+  /** Optional tint color (0xRRGGBB). White (0xffffff) / missing = no tint. */
+  tint?: number;
   /** Optional signal emitted when the playhead crosses this keyframe. */
   signal?: string;
 }
@@ -1922,6 +1976,8 @@ interface AnimRow {
   keyframes: KFRow[];
   /** Mirror offsetX + rotation with the sprite's facing (1 = on). */
   mirror?: number;
+  /** Tint mode: 1 = solid fill (white = flash), 0 / missing = multiply. */
+  tintFill?: number;
 }
 
 function AnimatorCard({
@@ -1959,6 +2015,7 @@ function AnimatorCard({
       bpId: bp.id,
       target: activeAnim.target,
       mirror: activeAnim.mirror ?? 0,
+      tintFill: activeAnim.tintFill ?? 0,
       ...sample,
     });
     // We intentionally depend on the keyframes array IDENTITY (changes
@@ -2108,28 +2165,51 @@ function AnimatorCard({
                     <Toggle value={!!a.playOnStart} onChange={(v) => patchAnim(i, { playOnStart: v ? 1 : 0 })} />
                     <label style={{ color: "var(--text-dim)" }} title="When on, offsetX and rotation flip sign based on the host sprite's facing direction (facingScaleX). Use for a single 'swing right' animation that arcs left when the character faces left.">Mirror w/ facing</label>
                     <Toggle value={!!a.mirror} onChange={(v) => patchAnim(i, { mirror: v ? 1 : 0 })} />
+                    <label style={{ color: "var(--text-dim)" }} title="How tint keyframes apply. Tint = multiply (white = no change, for colored tints). Fill = solid silhouette of the color (white = a full-white flash).">Tint Mode</label>
+                    <select value={a.tintFill ? "fill" : "tint"} onChange={(e) => patchAnim(i, { tintFill: e.target.value === "fill" ? 1 : 0 })} style={{ fontSize: 11, padding: "1px 4px" }}>
+                      <option value="tint">Tint (multiply)</option>
+                      <option value="fill">Fill (flash)</option>
+                    </select>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 4 }}>
                     Keyframes
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "42px 40px 40px 40px 46px 46px minmax(48px, 1fr) 18px", gap: 4, fontSize: 9, color: "var(--text-dim)", paddingLeft: 4 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "42px 40px 40px 40px 46px 46px 50px minmax(48px, 1fr) 18px", gap: 4, fontSize: 9, color: "var(--text-dim)", paddingLeft: 4 }}>
                     <span>Time</span>
                     <span>X</span>
                     <span>Y</span>
                     <span>Scale</span>
                     <span>Opac.</span>
                     <span>Rot.</span>
+                    <span title="Tint color lerped across keyframes. White = no tint (original colors). e.g. flash red on hit, fade grey on death.">Tint</span>
                     <span title="Signal emitted when the playhead crosses this keyframe — fire a hit-signal at the exact pose (e.g. a Tracer pivoting from the weapon sprite). Empty = none.">Signal</span>
                     <span></span>
                   </div>
                   {a.keyframes.map((k, ki) => (
-                    <div key={ki} style={{ display: "grid", gridTemplateColumns: "42px 40px 40px 40px 46px 46px minmax(48px, 1fr) 18px", gap: 4, alignItems: "center" }}>
+                    <div key={ki} style={{ display: "grid", gridTemplateColumns: "42px 40px 40px 40px 46px 46px 50px minmax(48px, 1fr) 18px", gap: 4, alignItems: "center" }}>
                       <NumberField step={0.05} value={k.time}     onChange={(n) => patchKF(i, ki, { time:     n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
                       <NumberField step={1}    value={k.offsetX}  onChange={(n) => patchKF(i, ki, { offsetX:  n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
                       <NumberField step={1}    value={k.offsetY}  onChange={(n) => patchKF(i, ki, { offsetY:  n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
                       <NumberField step={0.05} value={k.scale}    onChange={(n) => patchKF(i, ki, { scale:    n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
                       <NumberField step={0.05} value={k.opacity}  onChange={(n) => patchKF(i, ki, { opacity:  n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
                       <NumberField step={0.05} value={k.rotation} onChange={(n) => patchKF(i, ki, { rotation: n })} style={{ fontSize: 10, padding: "1px 2px", width: "100%" }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={typeof k.tint === "number" && k.tint >= 0}
+                          onChange={(e) => patchKF(i, ki, { tint: e.target.checked ? (typeof k.tint === "number" && k.tint >= 0 ? k.tint : 0xffffff) : -1 })}
+                          title="Tint this keyframe (off = no tint — use an 'off' keyframe to END a flash)."
+                          style={{ width: 12, height: 12, margin: 0, flex: "0 0 auto" }}
+                        />
+                        <input
+                          type="color"
+                          disabled={!(typeof k.tint === "number" && k.tint >= 0)}
+                          value={typeof k.tint === "number" && k.tint >= 0 ? "#" + (k.tint >>> 0).toString(16).padStart(6, "0").slice(-6) : "#ffffff"}
+                          onChange={(e) => patchKF(i, ki, { tint: parseInt(e.target.value.slice(1), 16) })}
+                          title="Tint color. White + Fill mode = full-white flash."
+                          style={{ flex: 1, minWidth: 0, height: 16, padding: 0, border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, cursor: "pointer", background: "transparent", opacity: typeof k.tint === "number" && k.tint >= 0 ? 1 : 0.35 }}
+                        />
+                      </div>
                       <SignalPicker
                         value={k.signal ?? ""}
                         onChange={(v) => patchKF(i, ki, { signal: v })}
@@ -2171,6 +2251,7 @@ function AnimatorCard({
                           bpId: bp.id,
                           target: a.target,
                           mirror: a.mirror ?? 0,
+                          tintFill: a.tintFill ?? 0,
                           ...sample,
                         });
                       }}

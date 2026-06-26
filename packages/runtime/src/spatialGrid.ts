@@ -54,6 +54,10 @@ export function rebuildSpatialGrid(scene: Phaser.Scene): void {
   const sprites = (scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
   for (const s of sprites) {
     if (s.destroyed) continue;
+    // Frozen off-screen sprites are inert (no tick, body disabled) and never
+    // move — keep them OUT of the grid so the rebuild + every getNeighbors
+    // query scale with ACTIVE sprites, not the total spawned count.
+    if (s._frozenByCull) continue;
     const go = s.gameObject;
     if (!go) continue;
     const cx = Math.floor(go.x / CELL_SIZE) + CELL_BIAS;

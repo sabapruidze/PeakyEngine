@@ -370,7 +370,7 @@ const CONDITION_OPTIONS: { value: string; label: string; needs: "action" | "thre
  *  for `signalFired` / `signalFiredEdge` conditions so authors discover
  *  them instead of guessing names. Datalist still allows custom signals. */
 const BUILT_IN_SIGNALS = [
-  "OnDamageTaken", "OnDeath", "OnHealed",
+  "OnDamageTaken", "OnBlocked", "OnPartialBlock", "OnDeath", "OnHealed",
   "OnJump", "OnLand", "OnFall", "OnDashStart", "OnDashEnd", "OnMoved", "OnStopped",
   "OnAnimationFinished",
   "OnTracerHit", "OnTracerLost",

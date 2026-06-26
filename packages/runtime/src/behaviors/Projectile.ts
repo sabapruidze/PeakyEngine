@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { Behavior } from "../Behavior";
+import { Logger } from "../Logger";
 import type { Sprite } from "../Sprite";
 import { getSpritesByTag } from "../Sprite";
 
@@ -23,9 +24,13 @@ import { getSpritesByTag } from "../Sprite";
 export class Projectile extends Behavior {
   kind = "Projectile";
 
-  /** "straight" = constant heading. "homing" = turn toward target each tick
-   *  up to `homingTurnRate` degrees/sec. */
-  mode: "straight" | "homing" = "straight";
+  /** "straight" = constant heading (facing direction).
+   *  "homing"  = turn toward the target every tick (up to `homingTurnRate`).
+   *  "aimed"   = snapshot the target's position at FIRE time and fly straight
+   *              there — no tracking, so the player can side-step it. The classic
+   *              top-down / bullet-hell shot. Aiming is done by FireProjectile;
+   *              the runtime then treats it exactly like "straight". */
+  mode: "straight" | "homing" | "aimed" = "straight";
   /** Travel speed (px/sec). FireProjectile may override per-shot. */
   speed = 600;
   /** Auto-destroy after this many seconds. 0 = no time limit. */
@@ -71,6 +76,10 @@ export class Projectile extends Behavior {
    *  specific target — falls back to nearest sprite carrying any of
    *  `targetTags`. */
   targetUid = -1;
+  /** UID of the sprite that fired this projectile (set by FireProjectile). The
+   *  collision-based destroyOnHit excludes it so a bullet doesn't self-destruct
+   *  on the shooter it spawns on top of. */
+  ownerUid = -1;
   /** Homing-mode max turn rate (degrees/sec). Higher = sharper turns. */
   homingTurnRate = 360;
   /** Custom hitbox width (px). 0 = use the body's width (which equals the
@@ -153,7 +162,14 @@ export class Projectile extends Behavior {
     this._spawnedAtSec = this.sprite.scene.time.now / 1000;
     this.angleRad = angleRad;
     if (speedOverride !== undefined && speedOverride > 0) this.speed = speedOverride;
-    if (targetUid !== undefined) this.targetUid = targetUid;
+    // Every launch is a FRESH shot. A pooled projectile is recycled (same
+    // behavior instance) so its previous life's state MUST reset here — else
+    // `_alreadyHit` still holds the last target's uid, `_checkOverlaps` skips
+    // it, destroyOnHit never fires, and a homing bullet orbits the target
+    // forever. `targetUid` likewise reverts to "resolve nearest by tag" unless
+    // the caller pins a specific target this shot.
+    this._alreadyHit.clear();
+    this.targetUid = targetUid ?? -1;
     this.fired = true;
     const body = this.sprite.body;
     if (body) {
@@ -223,6 +239,26 @@ export class Projectile extends Behavior {
     }
 
     this._checkOverlaps();
+    // `_checkOverlaps` may have destroyed us on a Target-Tags hit. Bail BEFORE
+    // `_drawDebug()` — onDestroy already tore down the debug graphics, so
+    // re-entering _drawDebug would lazily re-create it and leak a magenta hitbox
+    // outline in the scene forever.
+    if (this.sprite.destroyed) return;
+    // destroyOnHit FALLBACK via the shared CollisionScan overlap set (the SAME
+    // contact OnCollide uses). ONLY when no Target Tags are set — i.e. the
+    // author detects hits with OnCollide instead of the Projectile's own system.
+    // When Target Tags ARE set, `_checkOverlaps` above is authoritative: it
+    // emits the Hit Signal + applies damage AND destroys, in that order. We must
+    // NOT preempt it here, or the bullet would die on CollisionScan's (larger /
+    // earlier) body overlap before its own hit fires. Excludes the shooter (the
+    // bullet spawns on top of it) and other projectiles.
+    if (this.destroyOnHit && this._parseTags().length === 0) {
+      for (const o of this.sprite._justCollidedThisTick) {
+        if (o.uid === this.ownerUid || o.findBehaviorByKind("Projectile")) continue;
+        this.sprite.destroy();
+        return;
+      }
+    }
     this._drawDebug();
   }
 
@@ -256,7 +292,7 @@ export class Projectile extends Behavior {
   }
 
   private _drawDebug(): void {
-    if (!this.debugDraw) {
+    if (!this.debugDraw || this.sprite.destroyed) {
       if (this._dbgGfx) this._dbgGfx.clear();
       return;
     }
@@ -349,9 +385,30 @@ export class Projectile extends Behavior {
    *  spawned at `self.x, self.y` (on top of the player) would instantly
    *  overlap the player on the first tick and self-destroy. Authors must
    *  set targetTags to opt into auto-hit/destroy. */
+  private _warnedNoTags = false;
+  private _warnedNoTagged = false;
   private _checkOverlaps(): void {
     const tagList = this._parseTags();
-    if (tagList.length === 0) return;
+    if (tagList.length === 0) {
+      // Loudly explain the silent no-op — the #1 "my bullet does nothing" cause.
+      if (!this._warnedNoTags) {
+        this._warnedNoTags = true;
+        Logger.log({ level: "warn", source: "Projectile", message: `Projectile "${this.sprite.bpName}" fired but TARGET TAGS is empty — it can't hit anything (no Damage, no Hit Signal, no Destroy On Hit; it just flies until Lifetime expires). Set the Projectile component's "Target Tags" to the target's tag (e.g. "player").` });
+      }
+      return;
+    }
+    // The OTHER silent failure: Target Tags is set, but nothing in the scene
+    // actually carries any of them (e.g. the target BP was never tagged). One
+    // warning, only while no match exists — clears itself the moment a tagged
+    // target appears (covers targets spawned after the shot).
+    if (!this._warnedNoTagged) {
+      let anyTagged = false;
+      for (const t of tagList) { if (getSpritesByTag(this.sprite.scene, t).size > 0) { anyTagged = true; break; } }
+      if (!anyTagged) {
+        this._warnedNoTagged = true;
+        Logger.log({ level: "warn", source: "Projectile", message: `Projectile "${this.sprite.bpName}" has Target Tags [${tagList.join(", ")}] but NO sprite carries any of those tags — nothing to hit. Add one of these tags to the TARGET blueprint (e.g. give the Player BP a "player" tag in its tag list).` });
+      }
+    }
     const all = (this.sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
     const myBody = this.sprite.body;
     if (!myBody) return;
@@ -379,6 +436,9 @@ export class Projectile extends Behavior {
       if (!Phaser.Geom.Intersects.RectangleToRectangle(myRect, otherRect)) continue;
 
       this._alreadyHit.add(s.uid);
+      // Positive confirmation so "is my bullet even hitting?" is a one-line
+      // fact in the Output Log instead of a guessing game. Once per target.
+      Logger.log({ level: "log", source: "Projectile", message: `Projectile "${this.sprite.bpName}" HIT "${s.bpName}" (uid ${s.uid}) — ${this.hitSignal ? `emitted signal "${this.hitSignal}" on BOTH bullet and target` : "no Hit Signal set"}${this.damage > 0 ? `, ${this.damage} dmg` : ", no damage"}${this.destroyOnHit ? ", destroying" : ""}.` });
       if (this.hitSignal) {
         this.sprite.events.emit(this.hitSignal);
         s.events.emit(this.hitSignal);

@@ -44,8 +44,14 @@ export class Damageable extends Behavior {
   iframeSec = 0.5;
   /** Default lockout duration the Animator should treat as hit-react. */
   hitstunSec = 0.3;
-  /** Multiplier applied to incoming knockback. 0 disables knockback. */
+  /** Multiplier applied to incoming knockback on a NORMAL (un-blocked) hit.
+   *  0 disables knockback. */
   knockbackMultiplier = 1;
+  /** Knockback × applied on a FULL block (the OnBlocked case). 0 = the blocker
+   *  doesn't budge; > 1 = a block shoves them back harder than a clean hit. */
+  blockKnockbackMultiplier = 1;
+  /** Knockback × applied on a PARTIAL block (the OnPartialBlock case). */
+  partialKnockbackMultiplier = 1;
   /** When 1, the host Sprite is destroyed after `deathDestroyDelay` from kill(). */
   destroyOnDeath = 1;
   /** Seconds between kill() and Sprite.destroy(). Gives the Animator's
@@ -120,23 +126,26 @@ export class Damageable extends Behavior {
       return false;
     }
 
-    // Guard / block gate. While guarding (manual flag) OR in a configured
-    // block animator state, scale the incoming hit by `guardMultiplier`.
-    // A 0 multiplier fully blocks: no HP loss, no i-frames consumed — but
-    // OnBlocked fires so authors can play a block spark / parry push.
+    // Guard / block gate — while guarding (manual flag) OR in a configured block
+    // animator state, scale the incoming hit by `guardMultiplier`. The three
+    // outcomes are MUTUALLY EXCLUSIVE:
+    //   • full block (guardMultiplier 0 → 0 damage)        → OnBlocked, then return (no HP loss)
+    //   • partial block (0 < guardMultiplier < 1)          → OnPartialBlock only (NO OnDamageTaken)
+    //   • no real block (unguarded, or guardMultiplier ≥ 1) → normal hit → OnDamageTaken
+    let partialBlocked = -1; // >= 0 marks a partial block (carries the absorbed amount)
     if (this.isGuarding()) {
       const blocked = amount * (1 - Math.max(0, this.guardMultiplier));
       amount = amount * Math.max(0, this.guardMultiplier);
-      this.sprite.events.emit("OnBlocked", {
-        blocked,
-        hp: this.hp,
-        maxHp: this.maxHp,
-        sourceUid: source?.uid ?? null,
-      });
       if (amount <= 0) {
+        // FULL block — only OnBlocked, no HP loss, no OnDamageTaken. Knockback
+        // still applies (a blocked hit can shove the blocker) via its own ×.
+        this._applyKnockback(opts, this.blockKnockbackMultiplier);
+        this.sprite.events.emit("OnBlocked", { blocked, hp: this.hp, maxHp: this.maxHp, sourceUid: source?.uid ?? null });
         Logger.log({ level: "warn", source: "Damageable", message: `applyDamage BLOCKED on "${this.sprite.bpName}" — fully guarded (guardMultiplier=${this.guardMultiplier}).` });
         return false;
       }
+      if (blocked > 0) partialBlocked = blocked; // PARTIAL block (0 < guardMultiplier < 1)
+      // guardMultiplier ≥ 1 (blocked ≤ 0) = no actual block → falls through to OnDamageTaken.
     }
 
     this.hp = Math.max(0, this.hp - amount);
@@ -144,24 +153,40 @@ export class Damageable extends Behavior {
     this.iframesUntilSec = now + (typeof opts.iframes === "number" ? opts.iframes : this.iframeSec);
     this.hitstunUntilSec = now + (typeof opts.hitstun === "number" ? opts.hitstun : this.hitstunSec);
 
-    const body = this.sprite.body;
-    if (body && (opts.knockbackX || opts.knockbackY)) {
-      const kx = (opts.knockbackX ?? 0) * this.knockbackMultiplier;
-      const ky = (opts.knockbackY ?? 0) * this.knockbackMultiplier;
-      if (kx) body.setVelocityX(kx);
-      if (ky) body.setVelocityY(ky);
-    }
+    this._applyKnockback(opts, partialBlocked >= 0 ? this.partialKnockbackMultiplier : this.knockbackMultiplier);
 
-    this.sprite.events.emit("OnDamageTaken", {
-      amount,
-      hp: this.hp,
-      maxHp: this.maxHp,
-      sourceUid: source?.uid ?? null,
-      fxSlot: opts.fxSlot ?? "blood_on_hit",
-    });
+    // A partial block fires OnPartialBlock INSTEAD of OnDamageTaken — the block
+    // reaction replaces the hurt reaction (no hurt sound / flinch on a guard),
+    // even though HP was reduced above. Everything else fires OnDamageTaken.
+    if (partialBlocked >= 0) {
+      this.sprite.events.emit("OnPartialBlock", {
+        blocked: partialBlocked,
+        through: amount,
+        hp: this.hp,
+        maxHp: this.maxHp,
+        sourceUid: source?.uid ?? null,
+      });
+    } else {
+      this.sprite.events.emit("OnDamageTaken", {
+        amount,
+        hp: this.hp,
+        maxHp: this.maxHp,
+        sourceUid: source?.uid ?? null,
+        fxSlot: opts.fxSlot ?? "blood_on_hit",
+      });
+    }
 
     if (this.hp === 0) this.kill();
     return true;
+  }
+
+  private _applyKnockback(opts: DamageOpts, mult: number): void {
+    const body = this.sprite.body;
+    if (!body || !(opts.knockbackX || opts.knockbackY)) return;
+    const kx = (opts.knockbackX ?? 0) * mult;
+    const ky = (opts.knockbackY ?? 0) * mult;
+    if (kx) body.setVelocityX(kx);
+    if (ky) body.setVelocityY(ky);
   }
 
   /** Add HP, clamped to maxHp. Returns the amount actually healed. */

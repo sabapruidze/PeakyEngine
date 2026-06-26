@@ -40,6 +40,7 @@ export const BUILT_IN_SIGNALS_REGISTRY: BuiltInSignal[] = [
   { name: "OnDeath",              source: "Damageable",         direction: "listen", description: "Fires on the host the frame kill() runs (hp hits 0 or explicit kill)." },
   { name: "OnHealed",             source: "Damageable",         direction: "listen", description: "Fires on the host the frame heal() adds hp (above 0)." },
   { name: "OnBlocked",            source: "Damageable",         direction: "listen", description: "Fires on the host when an incoming hit is guarded (host is in a Block State or the guarding flag is on). Use for block sparks / parry push / SFX." },
+  { name: "OnPartialBlock",       source: "Damageable",         direction: "listen", description: "Fires on the host when a guarded hit is only PARTIALLY blocked (0 < Guard Multiplier < 1) — some damage was absorbed but some still got through (chip damage). Fires alongside OnBlocked. Payload: blocked (absorbed) + through (damage taken)." },
 
   // ─── Inventory ──────────────────────────────────────────────────────
   { name: "OnItemAdded",          source: "Inventory",          direction: "listen", description: "Fires on the host when AddItem adds at least one unit. Payload: { item, qty, added }." },

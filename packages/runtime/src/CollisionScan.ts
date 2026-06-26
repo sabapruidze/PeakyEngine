@@ -86,10 +86,14 @@ export function runCollisionScan(sprites: Sprite[]): void {
     const ab = (a as unknown as { body?: Body }).body;
     if (!ab || ab.enable === false) { bodies[i] = null; exceptTagsByIdx[i] = null; continue; }
     // Opt-in collision: a sprite only participates in overlap / OnCollide-
-    // OnOverlap detection when it has a collider (Collider / Solid / JumpThru).
-    // "Use Frame Collider" auto-injects a Collider, so it's covered. A BP with
-    // NO collider is inert — no spurious triggers off its default rect.
-    if (!a.findBehaviorByKind("Collider") && !a.findBehaviorByKind("Solid") && !a.findBehaviorByKind("JumpThru")) {
+    // OnOverlap detection when it has a collider (Collider / Solid / JumpThru),
+    // OR a Projectile (a bullet is inherently a collision object — it opts out
+    // of PHYSICS separation via checkCollision.none, but authors still expect
+    // OnCollide/OnOverlap to detect it). "Use Frame Collider" auto-injects a
+    // Collider, so it's covered. A BP with none of these is inert — no spurious
+    // triggers off its default rect.
+    if (!a.findBehaviorByKind("Collider") && !a.findBehaviorByKind("Solid")
+        && !a.findBehaviorByKind("JumpThru") && !a.findBehaviorByKind("Projectile")) {
       bodies[i] = null; exceptTagsByIdx[i] = null; continue;
     }
     bodies[i] = ab;

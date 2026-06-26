@@ -274,6 +274,16 @@ export class Peaky {
               for (const pe of s.findBehaviorsByKind("ParticleEmitter")) pe.setSimTimeScale(scale);
             }
           }
+          // affectSmartTween OFF → keep SmartTween playing THROUGH the freeze
+          // (run on the raw frame delta at the pre-freeze speed). Default ON
+          // freezes it naturally via the global time scale — no override needed.
+          if (this.data.get("peaky.hitstopAffectSmartTween") === false) {
+            const prevS = (this.data.get("peaky.hitstopPrevScale") as number | undefined) ?? 1;
+            const all = (this.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+            for (const s of all) {
+              for (const st of s.findBehaviorsByKind("SmartTween")) (st as unknown as { setSimTimeScale?: (n: number) => void }).setSimTimeScale?.(prevS);
+            }
+          }
           // Second HitStop extends the freeze window (max of existing and new
           // end time) rather than truncating — feels right for combo strings
           // where the player wants the last hit's hitstop to land in full.
@@ -302,10 +312,19 @@ export class Peaky {
               for (const pe of s.findBehaviorsByKind("ParticleEmitter")) pe.setSimTimeScale(prev);
             }
           }
+          // Clear any SmartTween raw-delta override so it follows the global
+          // clock again (harmless when none was set).
+          {
+            const all = (this.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+            for (const s of all) {
+              for (const st of s.findBehaviorsByKind("SmartTween")) (st as unknown as { setSimTimeScale?: (n: number) => void }).setSimTimeScale?.(-1);
+            }
+          }
           this.data.remove("peaky.hitstopUntilRealMs");
           this.data.remove("peaky.hitstopPrevScale");
           this.data.remove("peaky.hitstopAffectPhysics");
           this.data.remove("peaky.hitstopAffectParticles");
+          this.data.remove("peaky.hitstopAffectSmartTween");
           this.data.remove("peaky.hitstopMs");
           this.data.remove("peaky.hitstopScale");
         }
@@ -433,7 +452,8 @@ export class Peaky {
                   s.body.moves = false;
                   s.body.enable = false;
                 }
-                s.gameObject.setVisible(false);
+                // Hide the host AND its overlays so the renderer skips them all.
+                s.setCullHidden(true);
               }
               frozenCount += 1;
               continue;
@@ -444,7 +464,7 @@ export class Peaky {
                 s.body.moves = true;
                 s.body.enable = true;
               }
-              s.gameObject.setVisible(true);
+              s.setCullHidden(false);
             }
           }
           activeCount += 1;

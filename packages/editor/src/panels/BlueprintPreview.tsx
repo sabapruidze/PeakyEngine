@@ -185,6 +185,11 @@ export function BlueprintPreview({
     : -1;
   const visionMaskBh  = visionMaskIdx >= 0 ? bp.behaviors[visionMaskIdx] : undefined;
   const vmCfg         = visionMaskBh?.config ?? {};
+  // AIBrain attack-range ring — shown when the AIBrain chip is selected so the
+  // author can tune `attackRange` visually (mirrors the VisionMask radius ring).
+  const aiBrainIdx = (typeof selectedIdx === "number" && bp.behaviors[selectedIdx]?.kind === "AIBrain")
+    ? selectedIdx : -1;
+  const aiBrainBh  = aiBrainIdx >= 0 ? bp.behaviors[aiBrainIdx] : undefined;
   const vmOffX        = Number(vmCfg.centerOffsetX ?? 0);
   const vmOffY        = Number(vmCfg.centerOffsetY ?? 0);
   const vmRadius      = Number(vmCfg.radius ?? 80);
@@ -583,6 +588,24 @@ export function BlueprintPreview({
           const hostPvTransform = hostPv
             ? `translate(${(hostPv.offsetX * sc).toFixed(2)}px, ${(hostPv.offsetY * sc).toFixed(2)}px) scale(${hostPv.scale}) rotate(${hostPv.rotation}deg)`
             : "";
+          // Honor TiledBackground flipX/flipY + compose the SmartTween host
+          // scrub transform. Shared by the sprite img AND its tint overlay.
+          const flipT = (() => {
+            if (renderer?.kind !== "TiledBackground") return "";
+            const fx = renderer.config.flipX ? -1 : 1;
+            const fy = renderer.config.flipY ? -1 : 1;
+            return fx === 1 && fy === 1 ? "" : `scale(${fx}, ${fy})`;
+          })();
+          const imgTransform = `${hostPvTransform} ${flipT}`.trim() || undefined;
+          const imgTransformOrigin = (hostPv && smartTweenBh)
+            ? `${(pivotX + stPivotX) * sc}px ${(pivotY + stPivotY) * sc}px`
+            : "center center";
+          // SmartTween scrub tint — approximates Phaser's tint with a colored
+          // overlay masked to the sprite alpha. Multiply mode = mix-blend
+          // multiply (white = no-op, so it's skipped). Fill mode = solid
+          // silhouette (mix-blend normal), so white shows as a full-white flash.
+          const pvFill = !!(hostPv && hostPv.tintFill);
+          const pvTint = hostPv && typeof hostPv.tint === "number" && hostPv.tint >= 0 && (pvFill || hostPv.tint !== 0xffffff) ? hostPv.tint : -1;
           return (
             <>
               {showSprite && (
@@ -597,29 +620,31 @@ export function BlueprintPreview({
                     imageRendering: "pixelated",
                     pointerEvents: "none",
                     opacity: hostPv ? hostPv.opacity : undefined,
-                    // Honor TiledBackground flipX/flipY in the BP preview so
-                    // authors can see the mirror they configured (the runtime
-                    // TileSprite applies the same flag — without this the
-                    // editor preview lied about the configured visual).
-                    // The SmartTween host scrub override (hostPvTransform) is
-                    // composed in front so "host"/"SpriteRenderer" animations
-                    // preview on the body.
-                    transform: (() => {
-                      const flip = (() => {
-                        if (renderer?.kind !== "TiledBackground") return "";
-                        const fx = renderer.config.flipX ? -1 : 1;
-                        const fy = renderer.config.flipY ? -1 : 1;
-                        return fx === 1 && fy === 1 ? "" : `scale(${fx}, ${fy})`;
-                      })();
-                      const t = `${hostPvTransform} ${flip}`.trim();
-                      return t || undefined;
-                    })(),
-                    // When editing a SmartTween, scrub-scaling pivots around its
-                    // scale-pivot point (matching the runtime) so the preview is
-                    // honest about where the scale grows from.
-                    transformOrigin: (hostPv && smartTweenBh)
-                      ? `${(pivotX + stPivotX) * sc}px ${(pivotY + stPivotY) * sc}px`
-                      : "center center",
+                    transform: imgTransform,
+                    transformOrigin: imgTransformOrigin,
+                  }}
+                />
+              )}
+              {showSprite && pvTint >= 0 && firstFrameURL && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: spriteLeftPx,
+                    top:  spriteTopPx,
+                    width:  actorW,
+                    height: actorHpx,
+                    backgroundColor: `#${(pvTint >>> 0).toString(16).padStart(6, "0").slice(-6)}`,
+                    WebkitMaskImage: `url(${firstFrameURL})`,
+                    maskImage: `url(${firstFrameURL})`,
+                    WebkitMaskSize: "100% 100%",
+                    maskSize: "100% 100%",
+                    WebkitMaskRepeat: "no-repeat",
+                    maskRepeat: "no-repeat",
+                    mixBlendMode: pvFill ? "normal" : "multiply",
+                    pointerEvents: "none",
+                    opacity: hostPv ? hostPv.opacity : undefined,
+                    transform: imgTransform,
+                    transformOrigin: imgTransformOrigin,
                   }}
                 />
               )}
@@ -1087,6 +1112,23 @@ export function BlueprintPreview({
               onMouseDown={(e) => startGizmoDrag(
                 { kind: "emitter-offset", axis: "y", startX: e.clientX, startY: e.clientY, origOffX: eOffX, origOffY: eOffY }, e)}
             />
+          </svg>
+        );
+      })()}
+
+      {aiBrainBh && (() => {
+        // Attack-range ring (dashed circle) + radial distance line + label,
+        // centered on the actor. Red matches the combat/attack convention.
+        const R = Number(aiBrainBh.config.attackRange ?? 0);
+        if (!(R > 0)) return null;
+        const ring = Math.max(2, R * sc);
+        const C = "#e85553";
+        return (
+          <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: previewH, overflow: "visible", pointerEvents: "none" }}>
+            <circle cx={actorPx} cy={actorPy} r={ring} fill="rgba(232,85,83,0.05)" stroke={C} strokeWidth={1.5} strokeDasharray="5 4" opacity={0.85} />
+            <line x1={actorPx} y1={actorPy} x2={actorPx + ring} y2={actorPy} stroke={C} strokeWidth={1.5} opacity={0.9} />
+            <circle cx={actorPx} cy={actorPy} r={3} fill="#ffd040" opacity={0.95} />
+            <text x={actorPx + ring / 2} y={actorPy - 5} fill="#ff8a88" fontSize={11} fontWeight={700} textAnchor="middle">atk {Math.round(R)}</text>
           </svg>
         );
       })()}

@@ -5,7 +5,7 @@ import { nodeDescription, nodeExample } from "./inspector/LogicSheet/nodeDocs";
 import { BEHAVIOR_PARAMS, type BehaviorParamMeta } from "../behaviorMeta";
 import { COMPONENT_DOCS } from "./componentDocs";
 import { ComponentIcon, hasComponentIcon } from "../componentIcons";
-import { ParamField } from "./inspector/BlueprintInspector";
+import { ParamField, KnockbackTriple } from "./inspector/BlueprintInspector";
 import { useEditor } from "../store";
 import type { LogicGraphNode, BehaviorKind } from "../project";
 
@@ -412,22 +412,27 @@ function ComponentPanelMock({ kind, params, descs }: { kind: BehaviorKind; param
         {params.map((p, i) => {
           const soon = !!p.comingSoon;
           const desc = soon ? `🔒 ${p.comingSoon}` : (descs?.[p.key] ?? p.label);
+          const isKnockTriple = kind === "Damageable" && p.key === "knockbackMultiplier";
           return (
             <div key={p.key + i} style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 18, alignItems: "center", padding: "1px 6px", background: i % 2 ? "rgba(255,255,255,0.015)" : "transparent", opacity: soon ? 0.5 : 1 }}>
               {/* The actual inspector field — non-interactive in the doc. */}
               <div style={{ pointerEvents: "none", width: 320 }}>
-                <ParamField
-                  paramKey={p.key}
-                  label={p.label}
-                  type={p.type}
-                  options={p.options}
-                  value={p.default}
-                  sprites={sprites}
-                  currentSpriteId=""
-                  uiWidgets={uiWidgets}
-                  inputActions={inputActions}
-                  onChange={() => {}}
-                />
+                {isKnockTriple ? (
+                  <KnockbackTriple cfg={{}} onUpdate={() => {}} />
+                ) : (
+                  <ParamField
+                    paramKey={p.key}
+                    label={p.label}
+                    type={p.type}
+                    options={p.options}
+                    value={p.default}
+                    sprites={sprites}
+                    currentSpriteId=""
+                    uiWidgets={uiWidgets}
+                    inputActions={inputActions}
+                    onChange={() => {}}
+                  />
+                )}
               </div>
               <div style={{ fontSize: 12.5, color: soon ? "#9a8a6a" : "#aab3c2", lineHeight: 1.45 }}>{desc}</div>
             </div>
