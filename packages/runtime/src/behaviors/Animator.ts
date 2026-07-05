@@ -226,6 +226,16 @@ export class Animator extends Behavior {
       return;
     }
     if (!override && this._playing.has(name)) return;
+    // One animation per TARGET at a time. Two anims on the same target (e.g.
+    // a "scaleUp" and a "scaleDown" both driving host scale) otherwise BOTH
+    // write the value every tick and fight. Stop any other anim on this target
+    // — AND drop its pin — so the new one cleanly replaces it from the live
+    // value with no leftover end-state snapping the target.
+    for (const other of [...this._playing.keys()]) {
+      if (other === name) continue;
+      const oa = this.animations.find((x) => x.name === other);
+      if (oa && oa.target === a.target) { this._playing.delete(other); this._pinned.delete(oa.target); }
+    }
     // Use the animator's SCALED sim clock (advanced by the timeScale-
     // adjusted delta in update) — NOT wall-clock scene.time.now — so
     // SmartTween playback honors SetTimeScale: slow-mo slows the swing,

@@ -92,8 +92,11 @@ export function runCollisionScan(sprites: Sprite[]): void {
     // OnCollide/OnOverlap to detect it). "Use Frame Collider" auto-injects a
     // Collider, so it's covered. A BP with none of these is inert — no spurious
     // triggers off its default rect.
+    const srOptIn = a.findBehaviorByKind("SpriteRenderer") as
+      | { useFrameCollider?: number } | undefined;
     if (!a.findBehaviorByKind("Collider") && !a.findBehaviorByKind("Solid")
-        && !a.findBehaviorByKind("JumpThru") && !a.findBehaviorByKind("Projectile")) {
+        && !a.findBehaviorByKind("JumpThru") && !a.findBehaviorByKind("Projectile")
+        && !(srOptIn && srOptIn.useFrameCollider)) {
       bodies[i] = null; exceptTagsByIdx[i] = null; continue;
     }
     bodies[i] = ab;

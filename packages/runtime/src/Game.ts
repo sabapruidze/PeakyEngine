@@ -4,6 +4,7 @@ import { clearRandomSyncCache } from "./LogicSheetRunner";
 import { drawNavDebug } from "./nav/navPoints";
 import { Sprite, SpriteShape } from "./Sprite";
 import { runCollisionScan } from "./CollisionScan";
+import { runDoorScan } from "./sm/eval";
 import { rebuildSpatialGrid } from "./spatialGrid";
 import { Solid } from "./behaviors/Solid";
 import { JumpThru } from "./behaviors/JumpThru";
@@ -61,6 +62,11 @@ export class Peaky {
   private readonly config: Required<PeakyConfig>;
   private phaserGame?: Phaser.Game;
   private scene?: Phaser.Scene;
+  /** The CURRENT scene builder + preload. Stored (not captured in `start`) so an
+   *  in-place `scene.restart()` rebuilds whatever scene `setBuilder` last set —
+   *  this is what lets GoToLayout swap scenes WITHOUT destroying the game. */
+  private _builder?: Builder;
+  private _preload?: PreloadHook;
   /** Public read-only accessor — set inside the Phaser scene's `create()`
    *  callback. Available after start()'s builder runs. Editor-side runProject
    *  uses this to register scene-data callbacks before any sprite spawn. */
@@ -116,13 +122,33 @@ export class Peaky {
     return s;
   }
 
+  /** Swap the builder + preload for the NEXT scene build. Pure setter — pair
+   *  with `scene.restart()` (via `gotoScene`) to rebuild in place. */
+  setBuilder(build: Builder, preload?: PreloadHook): void {
+    this._builder = build;
+    this._preload = preload;
+  }
+
+  /** In-place scene transition: swap the builder, then restart the Phaser scene
+   *  so `create()` rebuilds the NEW scene on the SAME game (textures kept). Fires
+   *  the prior run's SHUTDOWN cleanup + the create() registry resets — same path
+   *  RestartLayout uses. No-op if the game is already torn down. */
+  gotoScene(build: Builder, preload?: PreloadHook): void {
+    this.setBuilder(build, preload);
+    const ph = this.scene;
+    if (ph) ph.scene.restart();
+  }
+
   start(build: Builder, preload?: PreloadHook): this {
+    this._builder = build;
+    this._preload = preload;
     const self = this;
     class MainScene extends Phaser.Scene {
       constructor() { super("main"); }
       preload() {
         // Caller queues data-URL textures, audio, etc. before create() runs.
-        if (preload) preload(this);
+        // Reads the CURRENT stored preload so a restart re-preloads the new scene.
+        if (self._preload) self._preload(this);
       }
       create() {
         self.scene = this;
@@ -169,6 +195,56 @@ export class Peaky {
         this.data.set("peaky.pickedSets", new Map());
         this.data.set("peaky.collideTracker", new Map());
         this.data.set("peaky.collidePartners", new Map());
+        // ── Persistent-game resets ──────────────────────────────────────────
+        // These used to be wiped by the full game.destroy() on GoToLayout. With
+        // in-place scene.restart() (RestartLayout today, all transitions after
+        // the fast-transition refactor) they'd otherwise leak or FREEZE the new
+        // scene. Harmless on a fresh boot (already empty).
+        // Hitstop — else a transition mid-hitstop leaves the new scene frozen.
+        for (const k of ["peaky.hitstopBeginAtMs", "peaky.hitstopUntilRealMs", "peaky.hitstopPrevScale", "peaky.hitstopScale", "peaky.hitstopMs", "peaky.hitstopAffectPhysics", "peaky.hitstopAffectParticles", "peaky.hitstopAffectSmartTween"]) this.data.remove(k);
+        this.time.timeScale = 1;
+        this.tweens.timeScale = 1;
+        if (this.physics?.world) this.physics.world.timeScale = 1;
+        // Camera — the MAIN camera survives restart; clear stale zoom/follow/
+        // scroll/rotation (the "camera zoomed after a transition" bug) + the
+        // cached {sprite,behavior} target (else Camera follows a dead sprite).
+        this.data.remove("peaky.camera");
+        const _mc = this.cameras?.main;
+        if (_mc) { _mc.stopFollow(); _mc.setZoom(1); _mc.setScroll(0, 0); _mc.setRotation(0); }
+        // Mouse/input transient state — else a click during the transition ghosts
+        // a double-click and held buttons read as stuck in the new scene.
+        this.data.set("peaky.mousePrev", new Map());
+        this.data.set("peaky.mouseDownAt", new Map());
+        this.data.set("peaky.lastClickAt", new Map());
+        this.data.set("peaky.lastObjClickAt", new Map());
+        this.data.set("peaky.wheelDeltaY", 0);
+        this.data.set("peaky.mouseBlockers", new Set());
+        // Tilemap registries — TilemapRenderer APPENDS (`?? []`), so old dead
+        // layer GameObjects/bodies accumulate unless cleared.
+        this.data.set("peaky.tilemapLayers", []);
+        this.data.set("peaky.tilemapStaticGroups", []);
+        this.data.set("peaky.tilemapsByName", new Map());
+        this.data.set("peaky.tilemapsByNameAll", new Map());
+        this.data.set("peaky.bigTileImages", []);
+        // Placement/spawn callbacks + queues (builder re-registers, but clear so
+        // the update loop can't read a stale closure/array from the prior run).
+        this.data.set("peaky.pendingPlacementCreates", []);
+        this.data.set("peaky.pendingPlacementDestroys", []);
+        this.data.set("peaky.onSpriteSpawnHooks", []);
+        this.data.remove("peaky.wireCollisionsFor");
+        this.data.remove("peaky.deactivateToPool");
+        this.data.remove("peaky.spawn");
+        this.data.remove("peaky.spawnUIWidget");
+        this.data.set("peaky.spritePool", new Map());
+        this.data.set("peaky.placementsBySpriteId", new Map());
+        this.data.set("peaky.activePlacement", null);
+        // Pause + transition flags.
+        this.data.set("peaky.pauseAll", false);
+        this.data.set("peaky.pausedLayers", new Set());
+        this.data.set("peaky.sceneEnding", false);
+        this.data.set("peaky.sceneReady", false);
+        this.data.set("peaky.isLoading", false);
+        this.data.set("peaky.loadingSceneOverride", "");
         // Release the OUTGOING run's per-sprite resources on scene SHUTDOWN.
         // scene.restart() (RestartLayout) reuses this scene object, so without
         // this the prior run's Logic Sheet scene-listeners + behavior
@@ -234,7 +310,8 @@ export class Peaky {
           this.cameras.main.postFX.clear();
           this.cameras.main.resetPostPipeline();
         }
-        build(self);
+        // Run the CURRENT stored builder (a restart rebuilds the swapped scene).
+        if (self._builder) self._builder(self);
       }
       update(_time: number, delta: number) {
         // Nav-point state debug overlay (green=active, yellow=busy, red=consumed,
@@ -407,6 +484,9 @@ export class Peaky {
         // behavior ticks so the animator's tag conditions see this tick's
         // fresh overlap state during its own update.
         runCollisionScan(snapshot);
+        // Door scan — reads this tick's ENTER edges (`_justCollidedThisTick`)
+        // to start a scene-linking transition when a traveler enters a door.
+        runDoorScan(snapshot);
         // Spatial grid — rebucket every sprite into 256px cells before any
         // behavior runs. Behaviors that call getNeighbors/getNeighborsByTag
         // this tick (AIBrain target acquisition, separation, MoveTo,
@@ -465,6 +545,11 @@ export class Peaky {
                 s.body.enable = true;
               }
               s.setCullHidden(false);
+              // While frozen the sprite never flush()ed, so any signal sent to
+              // it (EmitSignalTo by tag — freeze doesn't unindex tags) sat in
+              // the bus and would ghost-fire its OnSignal seconds late on wake.
+              // Drop the stale backlog, same as the pool reactivate path.
+              s.events.clearAll();
             }
           }
           activeCount += 1;

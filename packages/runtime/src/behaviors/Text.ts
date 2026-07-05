@@ -188,7 +188,7 @@ export class Text extends Behavior {
     // default visual entirely. Collision still uses the body bounds.
     obj.setAlpha(0);
 
-    const show = !!this.visible;
+    const show = !!this.visible && !this.sprite.manualHidden;
     this.overlay.setVisible(show);
     if (!show) return;
 
@@ -199,7 +199,7 @@ export class Text extends Behavior {
     // OVERRIDES base so a base alpha of 0 (spawn-invisible) doesn't trap
     // the animator at 0.
     const effectiveAlpha = this.animOpacity < 0 ? this.alpha : this.animOpacity;
-    this.overlay.setAlpha(Math.max(0, Math.min(1, effectiveAlpha)) * this._layerAlpha);
+    this.overlay.setAlpha(Math.max(0, Math.min(1, effectiveAlpha)) * this._layerAlpha * this.sprite.manualAlpha);
 
     // Alignment sets the text's PIVOT (origin) — left/right/center on X,
     // top/middle/bottom on Y — so the text grows in the chosen direction
@@ -241,7 +241,7 @@ export class Text extends Behavior {
     // syncOverlay() rewrites alpha each frame from this.alpha. So we
     // store the layer's alpha multiplier separately and apply it there.
     this._layerAlpha = alpha;
-    this.overlay.setVisible(visible && !!this.visible);
+    this.overlay.setVisible(visible && !!this.visible && !this.sprite.manualHidden);
   }
 
   /** Layer-level alpha multiplier — applied on top of the behavior's own alpha. */

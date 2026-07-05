@@ -553,6 +553,12 @@ export class CharacterAnimator extends Behavior {
     this._resetStateBookkeeping();
   }
 
+  resetForPool(): void {
+    // A pooled host respawns clean — drop the active state so it doesn't
+    // reactivate stuck in its death/hurt state from the previous life.
+    this._resetStateBookkeeping();
+  }
+
   /** Wipe the per-state runtime so a freshly-activated machine starts clean
    *  (the previous machine's state name / phase / combo timers don't leak in). */
   private _resetStateBookkeeping(): void {

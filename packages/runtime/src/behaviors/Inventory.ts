@@ -263,12 +263,16 @@ export class Inventory extends Behavior {
   }
 
   serialize(): Record<string, unknown> {
-    return { slots: this.slots, capacity: this.capacity };
+    // Copy slots — `this.slots` is the live bag (and, for a shared-bag
+    // inventory, aliases peaky.sharedBags). Returning it by reference would
+    // alias the live array into the save payload, so later mutation /
+    // normalization of one corrupts the other.
+    return { slots: this.slots.map((s) => ({ ...s })), capacity: this.capacity };
   }
 
   deserialize(state: Record<string, unknown>): void {
     if (typeof state.capacity === "number") this.capacity = state.capacity;
-    if (Array.isArray(state.slots)) this.slots = state.slots as InventorySlot[];
+    if (Array.isArray(state.slots)) this.slots = (state.slots as InventorySlot[]).map((s) => ({ ...s }));
     this.normalize();
     // The loaded slots ARE the authoritative bag (LoadSlot already restored the
     // matching count globals first). Mark synced so the first post-load tick

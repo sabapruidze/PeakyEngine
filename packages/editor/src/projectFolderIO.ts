@@ -312,7 +312,22 @@ export class EmptyStateWipeError extends Error {
   }
 }
 
+/** Per-path cache of the last-written asset object reference, for the
+ *  incremental-save skip in saveProjectToFolder. Module-level: a reload swaps
+ *  in fresh asset objects (new references), so everything writes once after a
+ *  load and only changed assets write thereafter. */
+const _lastWrittenAsset = new Map<string, unknown>();
+/** The store the reference cache above currently reflects. When the save
+ *  target changes (Open another folder, Save As switching the active store),
+ *  the cached references no longer correspond to what's on the new disk, so we
+ *  drop them and let everything write once. */
+let _lastWrittenStore: AssetStore | null = null;
+
 export async function saveProjectToFolder(store: AssetStore, project: PeakyProject, opts?: { allowWipe?: boolean }): Promise<void> {
+  if (store !== _lastWrittenStore) {
+    _lastWrittenAsset.clear();
+    _lastWrittenStore = store;
+  }
   // Compute the on-disk paths from each asset's (path, name). These are
   // ALSO the paths recorded in the manifest's assetIndex.
   const bpPaths    = project.blueprints.map(blueprintDiskPath);
@@ -356,8 +371,18 @@ export async function saveProjectToFolder(store: AssetStore, project: PeakyProje
       }
     }
   }
-  const writeIfNotSkipped = (path: string, data: unknown): Promise<void> =>
-    skipPaths.has(path) ? Promise.resolve() : store.writeJSON(path, data);
+  // Incremental save: skip rewriting an asset whose object REFERENCE hasn't
+  // changed since the last save. The store mutates immutably, so an unedited
+  // blueprint/scene/sprite keeps the same reference — only the asset you
+  // actually changed gets a new one. Without this, a 24-asset project
+  // re-stringified + re-wrote ALL 24 files on every 800ms autosave, which
+  // froze the editor for seconds as it grew. The manifest is still written
+  // every save (cheap), so the on-disk index stays correct.
+  const writeIfNotSkipped = (path: string, data: unknown): Promise<void> => {
+    if (skipPaths.has(path)) return Promise.resolve();
+    if (_lastWrittenAsset.get(path) === data) return Promise.resolve();
+    return store.writeJSON(path, data).then(() => { _lastWrittenAsset.set(path, data); });
+  };
   let toDelete: string[] = [];
   try {
     const oldManifest = await store.readJSON<SplitManifest>(PROJECT_MANIFEST_FILE);

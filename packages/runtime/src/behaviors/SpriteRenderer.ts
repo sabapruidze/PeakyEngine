@@ -183,11 +183,24 @@ export class SpriteRenderer extends Behavior {
    *  so the hitbox follows the art per frame. */
   frameColliderRect(): { w: number; h: number; offX: number; offY: number } | null {
     if (!this.useFrameCollider) return null;
-    const c = this.currentFrame()?.collider;
+    const f = this.currentFrame();
+    if (!f) return null;
+    const c = f.collider;
     if (!c?.enabled) return null;
-    // Already in display px (runProject scaled width/height/offset by the
-    // instance size override alongside the frame w/h).
-    return { w: c.width, h: c.height, offX: c.offsetX, offY: c.offsetY };
+    // Offsets are in display px (runProject scaled w/h/offset by the instance
+    // size). The collider offset is authored relative to the frame CENTER, but
+    // the overlay anchors the frame PIVOT at the host position. When the pivot
+    // is off-center, shift the body by (center − pivot) so the hitbox tracks the
+    // VISIBLE art instead of staying pinned to the host center — without this a
+    // feet-pivot drags the collider below the sprite at runtime. X mirrors with
+    // facing (the art flips around the pivot); a centered pivot → no shift, so
+    // existing sprites are unaffected.
+    const fw = f.w ?? this._spriteW;
+    const fh = f.h ?? this._spriteH;
+    const facing = this.sprite.facingScaleX < 0 ? -1 : 1;
+    const pivotDX = (fw / 2 - (f.pivotX ?? fw / 2)) * facing;
+    const pivotDY = fh / 2 - (f.pivotY ?? fh / 2);
+    return { w: c.width, h: c.height, offX: c.offsetX + pivotDX, offY: c.offsetY + pivotDY };
   }
 
   /**
@@ -329,6 +342,24 @@ export class SpriteRenderer extends Behavior {
     this.finishedEmitted = false;
     // Treat as a fresh switch so update()'s "anim changed?" branch runs.
     this.lastAnimName = this.currentAnimation;
+  }
+
+  /** Show `anim` from frame 0 and PAINT it immediately, without waiting for the
+   *  next update() tick. Used by PlayAnimation so a signal-driven animation on
+   *  ANOTHER object (e.g. a bed reacting to the player's EmitSignalTo) shows on
+   *  the exact frame it's triggered — no 1-frame cross-object render lag.
+   *  No-op if the anim name is unknown. `lastAnimName` is set so update()'s
+   *  "anim changed?" branch doesn't redundantly re-reset the frame next tick. */
+  playNow(anim: string): void {
+    const a = this._animations[anim];
+    if (!a || a.frames.length === 0) return;
+    this.currentAnimation = anim;
+    this.lastAnimName = anim;
+    this.currentFrameIdx = 0;
+    this.elapsedMs = 0;
+    this.finishedEmitted = false;
+    this.frameEnteredAtTick = this.sprite.scene.game.loop.frame;
+    this.applyFrame(this.sprite.scene, a.frames[0]);
   }
 
   /** Swap to a DIFFERENT sprite asset at runtime (new animation table). The
@@ -524,7 +555,7 @@ export class SpriteRenderer extends Behavior {
       if (this.overlay.texture.key !== slot.textureKey) {
         this.overlay.setTexture(slot.textureKey!);
       }
-      this.overlay.setVisible(this._layerVisible);
+      this.overlay.setVisible(this._layerVisible && !this.sprite.manualHidden);
       // Per-frame display size, centered on the body. Multiply scaleX by
       // sprite.facingScaleX so the overlay mirrors PROPORTIONALLY — during a
       // smooth-mirror tween (facingScaleX in transit between -1 and 1) the
@@ -620,7 +651,7 @@ export class SpriteRenderer extends Behavior {
     // Animator's `animOpacity` uses -1 as "no contribution" sentinel.
     // When set (>=0) it OVERRIDES the layer alpha entirely so an author
     // who started the sprite at alpha=0 can fade it back in via animator.
-    this.overlay.setAlpha(this.animOpacity < 0 ? this._layerAlpha : this.animOpacity * this._layerAlpha);
+    this.overlay.setAlpha((this.animOpacity < 0 ? this._layerAlpha : this.animOpacity * this._layerAlpha) * this.sprite.manualAlpha);
     // Animator tint (SmartTween tint keyframes). -1 = no contribution → clear
     // any tint. Fill mode = solid silhouette (white = flash); else multiply.
     const ov = this.overlay as unknown as { setTint?: (c: number) => void; setTintFill?: (c: number) => void; clearTint?: () => void };
@@ -641,8 +672,8 @@ export class SpriteRenderer extends Behavior {
     if (!this.overlay) return;
     this.overlay.setScrollFactor(scrollX, scrollY);
     this.overlay.setDepth(baseDepth + 1);
-    this.overlay.setAlpha(alpha);
-    this.overlay.setVisible(visible);
+    this.overlay.setAlpha(alpha * this.sprite.manualAlpha);
+    this.overlay.setVisible(visible && !this.sprite.manualHidden);
   }
 
   onDestroy(): void {

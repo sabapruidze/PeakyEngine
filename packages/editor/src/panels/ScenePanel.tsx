@@ -2,8 +2,13 @@ import { useEffect, useRef } from "react";
 import { Peaky, resetPersistentState, seedPersistentGlobals, seedPersistentLists } from "@peaky/runtime";
 import type { Sprite } from "@peaky/runtime";
 import { useEditor } from "../store";
-import { runScene, buildSpritePreload } from "../runProject";
+import { runScene, buildSceneOn, buildSpritePreload } from "../runProject";
 import { SceneEditor } from "./SceneEditor";
+
+/** When true, GoToLayout rebuilds the scene IN PLACE on the existing Phaser.Game
+ *  (textures kept → fast, "enter a room" feel). Flip to false to fall back to the
+ *  legacy destroy+recreate path if a regression appears. */
+const FAST_TRANSITIONS = true;
 
 export function ScenePanel() {
   const isRunning = useEditor((s) => s.isRunning);
@@ -33,9 +38,86 @@ export function ScenePanel() {
     // holds a WebGL context (browsers force-drop the oldest context after ~16).
     let bootGen = 0;
 
+    // ── Loader "hold-last-frame" cover ──────────────────────────────────────
+    // GoToLayoutWithLoad reveals the target by cold-booting it (see boot()),
+    // which briefly shows the target's empty layers + late tilemaps. We hold a
+    // full-screen cover (a snapshot of the loader's last frame, or its bg color)
+    // over the container from just before the swap until the target fires
+    // `peaky:sceneReady` (runProject emits it once every tilemap has rendered).
+    const READY_TIMEOUT_MS = 5000; // fail-safe: never leave the cover up forever
+    let coverEl: HTMLDivElement | null = null;
+    let readyTimeout: ReturnType<typeof setTimeout> | null = null;
+    let coverOnReady: (() => void) | null = null;
+
+    const removeCover = () => {
+      if (readyTimeout !== null) { clearTimeout(readyTimeout); readyTimeout = null; }
+      if (coverOnReady) { container.removeEventListener("peaky:sceneReady", coverOnReady); coverOnReady = null; }
+      if (coverEl) { coverEl.remove(); coverEl = null; }
+    };
+
+    const mountCover = (img: HTMLImageElement | undefined, bgCss: string) => {
+      removeCover();
+      if (!container.style.position) container.style.position = "relative";
+      const el = document.createElement("div");
+      el.style.position = "absolute";
+      el.style.inset = "0";
+      el.style.zIndex = "50";
+      el.style.pointerEvents = "none"; // must never swallow input
+      el.style.background = bgCss;
+      // `contain` (not `cover`): the snapshot is the game canvas at its render
+      // resolution; the container may be letterboxed (Phaser FIT+CENTER), so
+      // `cover` would scale/crop it and read as a zoom-in during the transition.
+      // `contain` keeps the snapshot aligned with where the canvas actually sits.
+      el.style.backgroundSize = "contain";
+      el.style.backgroundRepeat = "no-repeat";
+      el.style.backgroundPosition = "center";
+      if (img) el.style.backgroundImage = `url(${img.src})`;
+      container.appendChild(el);
+      coverEl = el;
+      coverOnReady = () => removeCover();
+      container.addEventListener("peaky:sceneReady", coverOnReady, { once: true });
+      readyTimeout = setTimeout(removeCover, READY_TIMEOUT_MS);
+    };
+
+    // Snapshot a live scene's current frame into the cover (so a transition
+    // holds the OUTGOING room's last frame across the game rebuild instead of
+    // flashing the new room's empty bg). Falls back to a solid bg-colour cover
+    // if snapshot is unavailable. Resolves once the cover is mounted; a 120ms
+    // fallback guarantees it never hangs on a stuck snapshot.
+    const mountCoverFrom = (fromScene: Phaser.Scene | undefined, bgCss: string): Promise<void> =>
+      new Promise((resolve) => {
+        const finish = (img?: HTMLImageElement) => { mountCover(img, bgCss); resolve(); };
+        try {
+          const r = fromScene?.game.renderer as unknown as { snapshot?: (cb: (img: unknown) => void) => void } | undefined;
+          if (fromScene && r && typeof r.snapshot === "function") {
+            let done = false;
+            r.snapshot((img) => { if (done) return; done = true; finish(img instanceof HTMLImageElement ? img : undefined); });
+            setTimeout(() => { if (done) return; done = true; finish(undefined); }, 120);
+          } else finish(undefined);
+        } catch { finish(undefined); }
+      });
+
+    // Loader path: snapshot the loader's last frame into the cover, THEN swap.
+    const coverThenGoTo = (loaderScene: Phaser.Scene, targetName: string, bgCss: string) => {
+      void mountCoverFrom(loaderScene, bgCss).then(() => {
+        container.dispatchEvent(new CustomEvent("peaky:goToScene", { detail: { name: targetName }, bubbles: true }));
+      });
+    };
+
     const boot = async (s: typeof scene) => {
       const myGen = ++bootGen;
-      gameRef.current?.destroy();
+      const prev = gameRef.current;
+      // Hold a cover over the container until the NEW scene fires
+      // `peaky:sceneReady`, so Play / room-changes don't flash empty layers
+      // during the game rebuild. Prefer the OUTGOING room's last frame (a clean
+      // A→B cut); solid bg-colour on first boot. The loader path already mounted
+      // its snapshot cover — don't stack a second.
+      if (!coverEl) {
+        const bg = `#${((s?.backgroundColor ?? 0) >>> 0).toString(16).padStart(6, "0").slice(-6)}`;
+        await mountCoverFrom(prev?.getScene(), bg);
+        if (cancelled || myGen !== bootGen) return; // superseded while snapshotting
+      }
+      prev?.destroy();
       gameRef.current = null;
       // runScene is async — it awaits AssetStore preload (folder mode
       // reads files from disk into blob URLs before Phaser's loader runs).
@@ -47,6 +129,23 @@ export function ScenePanel() {
       // the active Phaser scene; its `data.get(...)` is the source of
       // truth for placementsBySpriteId, recipes, etc.
       (window as unknown as { __peakyGame: typeof game }).__peakyGame = game;
+    };
+
+    // In-place transition — rebuild the target scene on the EXISTING game (no
+    // destroy, textures kept → fast). Cover the container with the outgoing
+    // scene's frame until the new scene fires `peaky:sceneReady`. Falls back to a
+    // cold `boot` if there's no live game yet.
+    const transitionTo = async (s: typeof scene) => {
+      const g = gameRef.current;
+      if (!g || !g.getScene()) { await boot(s); return; }
+      const myGen = ++bootGen;
+      if (!coverEl) {
+        const bg = `#${((s?.backgroundColor ?? 0) >>> 0).toString(16).padStart(6, "0").slice(-6)}`;
+        await mountCoverFrom(g.getScene(), bg);
+      }
+      if (cancelled || myGen !== bootGen || !gameRef.current) return;
+      // Rebuild in place. Keeps gameRef + __peakyGame (same game instance).
+      await buildSceneOn(g, project, s, container);
     };
     // Fresh Play session = fresh world: clear persistent state (removed
     // objects + globals) ONCE on the initial boot. Scene transitions reuse
@@ -100,7 +199,8 @@ export function ScenePanel() {
       pendingTimer = setTimeout(() => {
         pendingTimer = null;
         pending = false;
-        void boot(activeScene);
+        if (FAST_TRANSITIONS && gameRef.current) void transitionTo(activeScene);
+        else void boot(activeScene);
       }, 0);
     };
     container.addEventListener("peaky:goToScene", onGoToScene);
@@ -193,8 +293,11 @@ export function ScenePanel() {
             // GoToLayoutWithLoad starting from a clean slate.
             ph.data.set("peaky.isLoading", false);
             ph.data.set("peaky.loadingSceneOverride", "");
-            // Re-dispatch as a plain goToScene so the existing handler does the swap.
-            container.dispatchEvent(new CustomEvent("peaky:goToScene", { detail: { name: target.name }, bubbles: true }));
+            // Hold a cover (loader's last frame, else its bg colour) over the
+            // container until the target scene fires `peaky:sceneReady`, so the
+            // reveal is a fully-built scene — no empty-layer / tilemap-pop flash.
+            const bg = `#${((activeScene?.backgroundColor ?? 0) >>> 0).toString(16).padStart(6, "0").slice(-6)}`;
+            coverThenGoTo(ph, target.name, bg);
           }, wait);
         };
         try {
@@ -251,6 +354,7 @@ export function ScenePanel() {
       container.removeEventListener("peaky:goToScene", onGoToScene);
       container.removeEventListener("peaky:goToSceneWithLoad", onGoToSceneWithLoad);
       if (pendingTimer !== null) clearTimeout(pendingTimer);
+      removeCover();
       gameRef.current?.destroy();
       gameRef.current = null;
     };

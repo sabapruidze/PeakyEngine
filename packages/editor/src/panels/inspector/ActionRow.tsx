@@ -1993,6 +1993,12 @@ export function ActionConfig({
     case "Dismember":
     case "MoveToNavPoint":
     case "PatrolNavPoints":
+    case "PlaceBigTileAtWorld":
+    case "PlaceAnimatedTileAtWorld":
+    case "SetAmbientLight":
+    case "TweenVar":
+    case "TweenParam":
+    case "SetVisible":
       // Logic-Sheet-only actions; pill kept exhaustive (no event-sheet UI).
       return <span style={{ color: "var(--text-muted)" }}>{action.kind}</span>;
     default: {

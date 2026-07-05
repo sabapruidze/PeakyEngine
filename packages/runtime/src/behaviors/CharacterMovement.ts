@@ -323,6 +323,22 @@ export class CharacterMovement extends Behavior {
     this.wallSliding = false;
   }
 
+  resetForPool(): void {
+    // A pooled character respawns fresh — drop jump/dash counters and every
+    // in-flight phase so it doesn't reuse with jumpsUsed maxed or mid-dash.
+    this.jumpsUsed = 0;
+    this.dashing = false;
+    this.dashEndsAtSec = 0;
+    this.dashWindupEndsAtSec = 0;
+    this.dashReadyAtSec = 0;
+    this.jumpSustainEndsAt = 0;
+    this.bufferedJumpAtSec = -Infinity;
+    this.timeSinceGroundedSec = Infinity;
+    this._jumpAscentEndsAt = 0;
+    this._wallSlideSuppressedUntilSec = 0;
+    this.wallSliding = false;
+  }
+
   /** Sim time at which the in-flight jump's ascent phase ends (apex). Used
    *  to know whether to apply the ascent-tuned gravity (so height stays
    *  at the user-set value) or the base / fall gravity. Set on each jump

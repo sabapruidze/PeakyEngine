@@ -37,7 +37,11 @@ export type BehaviorKind =
   | "MoveTo"
   | "TiledBackground"
   | "WeaponSlot"
-  | "Dismemberment";
+  | "Dismemberment"
+  | "Outline"
+  | "Shadow"
+  | "LightSource"
+  | "Weather";
 
 export interface BehaviorInstance {
   kind: BehaviorKind;
@@ -581,6 +585,35 @@ export interface UIWidgetInstance {
 }
 
 /** A placement of a blueprint in a scene. */
+/** Turns a Trigger instance into a scene-linking DOOR. When `destSceneId` is set,
+ *  a traveler (a sprite carrying `travelerTag`, default "player") that ENTERS the
+ *  trigger is teleported to scene `destSceneId` and placed on the door whose
+ *  `name` === `destDoor` there. `name` is this door's own entry id (how OTHER
+ *  doors target it). Empty `destSceneId` = plain trigger, no teleport. */
+export interface DoorLink {
+  /** This door's entry id (unique within its scene) — the target of other doors' `destDoor`. */
+  name?: string;
+  /** Destination scene id. Set = this trigger acts as a door. */
+  destSceneId?: string;
+  /** The `name` of the door in the destination scene to arrive on. */
+  destDoor?: string;
+  /** Use the loading-screen transition (GoToLayoutWithLoad) instead of a plain cut. */
+  withLoad?: boolean;
+  /** (withLoad) which scene to show as the loading screen. Empty = the project's
+   *  default loadingSceneId. */
+  loaderSceneId?: string;
+  /** Which sprite tag counts as the traveler that activates the door. Default "player". */
+  travelerTag?: string;
+  /** How the door fires once the traveler is on it:
+   *  "instant" (default) = travel on entry; "delay" = travel after `delaySec`
+   *  standing on it; "input" = travel when `inputAction` is pressed while on it. */
+  activation?: "instant" | "delay" | "input";
+  /** Seconds to wait on the door before traveling (activation = "delay"). */
+  delaySec?: number;
+  /** Input action name to press to travel (activation = "input"). */
+  inputAction?: string;
+}
+
 export interface BlueprintInstance {
   id: string;
   blueprintId: string;
@@ -588,6 +621,8 @@ export interface BlueprintInstance {
   name?: string;
   x: number;
   y: number;
+  /** Optional Door link — turns a Trigger instance into a scene-to-scene door. */
+  door?: DoorLink;
   /**
    * Optional per-instance size override. When set, the body rect AND the
    * SpriteRenderer overlay are scaled to these dims (proportionally —
@@ -879,6 +914,10 @@ export interface NavMesh {
   rows: number;
   /** Row-major flat mask, length cols*rows. 1 = walkable, 0 = blocked. */
   walkable: number[];
+  /** Row-major flat mask, length cols*rows. 1 = SHELTERED (weather blocked here
+   *  — Weather.shelterMask reads this). Independent of `walkable`. Optional /
+   *  absent = no painted shelter (the scene just isn't covered anywhere). */
+  shelter?: number[];
   /** Obstacle polygons in world coords — detectable by tracers (via tags)
    *  and carved out of the walkable grid at bake time. */
   obstacles: NavObstacle[];
@@ -1526,6 +1565,9 @@ export interface AnimatedTileDef {
  */
 export interface BigTile {
   id: string;
+  /** Optional readable name, so logic can place/identify this BigTile by name
+   *  (e.g. "tree", "rock") instead of its opaque id. Empty = id-only. */
+  name?: string;
   /** Top-left cell coords in the tileset grid (0..cols-1, 0..rows-1). */
   c: number;
   r: number;
@@ -3060,6 +3102,74 @@ export const BEHAVIOR_DEFAULTS: Record<BehaviorKind, Record<string, unknown>> = 
     easing: "Quad.Out",
     emitOnEnd: 0,
   },
+  Outline: {
+    on: 1,
+    color: 0xffe24a,
+    thickness: 4,
+    opacity: 1,
+    pulse: 0,
+    pulseSpeed: 2,
+    glow: 0,
+    glowColor: 0xffe24a,
+    glowSize: 12,
+    glowOpacity: 0.6,
+    feather: 0.7,
+  },
+  Shadow: {
+    on: 1,
+    shape: "circle",
+    width: 48,
+    height: 16,
+    feather: 0.6,
+    opacity: 0.5,
+    color: 0x000000,
+    offsetX: 0,
+    offsetY: 8,
+    groundTag: "",
+    maxDrop: 600,
+    shrinkWithHeight: 0,
+  },
+  LightSource: {
+    on: 1,
+    color: 0xffd9a0,
+    radius: 140,
+    intensity: 1,
+    edge: "smooth",
+    feather: 0.7,
+    edgeAmount: 0.5,
+    offsetX: 0,
+    offsetY: 0,
+    flicker: 0,
+    flickerSpeed: 9,
+  },
+  Weather: {
+    on: 1,
+    space: "screen",
+    mode: "topdown",
+    killTags: "",
+    shelterTags: "",
+    shelterDrizzleTags: "",
+    count: 160,
+    speed: 380,
+    speedJitter: 0.3,
+    angle: 12,
+    wind: 0,
+    rotationSpeed: 0,
+    shape: "line",
+    size: 14,
+    sizeJitter: 0.4,
+    thickness: 2,
+    color: 0xaaccff,
+    alpha: 0.6,
+    sway: 0,
+    swaySpeed: 1.5,
+    spriteId: "",
+    splash: 0,
+    splashType: "simple",
+    splashSprite: "",
+    splashAnim: "",
+    splashScale: 1,
+  },
   UIWidgetRenderer: {
     // The runtime UIWidgetRenderer is attached automatically by
     // runProject.spawnFromUIWidget — its config is built from the
@@ -3485,29 +3595,33 @@ export function collectEmittedSignalNames(project: PeakyProject, opts?: { forBpI
     }
   }
   // UI widget element signals (button click, dropdown change, slider change,
-  // hover/leave). These emit on the widget sprite's OWN bus — a multi-widget
-  // routes child element signals up to the parent — so they're only audible
-  // inside THAT widget's own logic sheet. Surface them only when the picker
-  // is rendered there (forBpId === widget.id), or in an unscoped picker.
+  // hover/leave, slot, craft) now BROADCAST scene-wide — UIWidgetRenderer emits
+  // them on every sprite's bus — so they're audible in ANY blueprint's
+  // OnSignal. Surface them in EVERY picker (no widget-self scoping). Also scan
+  // each widget's OWN logic sheet for EmitSignal / EmitSignalTo, same as
+  // blueprints, so a signal a widget's sheet sends is selectable in the listener.
   for (const w of project.uiWidgets) {
     const collect = (v: UIWidgetVisual) => {
-      // Inventory slot-click / double-click fire on the BOUND CHARACTER's bus
-      // (cross-object, like an EmitSignalTo broadcast), so they're audible to
-      // that character's OnSignal regardless of which sheet the picker is on.
-      for (const s of [v.signalOnSlotClick, v.signalOnSlotDoubleClick]) {
+      for (const s of [v.signalOnClick, v.signalOnHover, v.signalOnLeave, v.signalOnChange, v.signalOnSelect, v.signalOnSlotClick, v.signalOnSlotDoubleClick, v.signalOnCraftClick, v.signalOnCraft]) {
         if (typeof s === "string" && s) names.add(s);
       }
-      // The rest emit on the widget's OWN bus — only audible in that widget's
-      // own logic sheet, so scope them to forBpId === w.id (or an unscoped picker).
-      if (!forBpId || forBpId === w.id) {
-        for (const s of [v.signalOnClick, v.signalOnHover, v.signalOnLeave, v.signalOnChange, v.signalOnSelect, v.signalOnCraftClick, v.signalOnCraft]) {
-          if (typeof s === "string" && s) names.add(s);
-        }
-        for (const o of v.options ?? []) if (typeof o.signal === "string" && o.signal) names.add(o.signal);
-      }
+      for (const o of v.options ?? []) if (typeof o.signal === "string" && o.signal) names.add(o.signal);
     };
     collect(w);
     for (const c of w.children ?? []) collect(c);
+    for (const folder of w.logicSheet?.folders ?? []) {
+      for (const node of folder.graph?.nodes ?? []) {
+        if (node.kind !== "action") continue;
+        const isSelf = node.type === "EmitSignal";
+        const isTo = node.type === "EmitSignalTo";
+        if (!isSelf && !isTo) continue;
+        if (forBpId && isSelf && w.id !== forBpId) continue;
+        if (isTo && broadcastUnreachable(node.params as { tags?: unknown; tag?: unknown })) continue;
+        const params = node.params as { signal?: unknown; name?: unknown };
+        const candidate = params.signal ?? params.name;
+        if (typeof candidate === "string" && candidate) names.add(candidate);
+      }
+    }
   }
   return Array.from(names).sort();
 }

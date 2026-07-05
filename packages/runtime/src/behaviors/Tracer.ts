@@ -46,6 +46,26 @@ export interface TracerHit {
   distance: number;
 }
 
+/** Axis-aligned bounds of a box tracer's hit area. The box is a rectangle of
+ *  length = |end − pivot| (== `distance`) and width = `2*halfThick`
+ *  (== thickness), oriented along the reach, reduced to its AABB.
+ *
+ *  This replaces the old `min/max(px,ex) ± halfThick` inflation, which padded
+ *  halfThick onto the FRONT and BACK ends too — so a distance=25, thickness=25
+ *  box came out 50×25 (you could never get a square). Now the length stays
+ *  exactly `distance`; at angle 0 that's `distance × thickness`. */
+function boxTraceAABB(px: number, py: number, ex: number, ey: number, halfThick: number): { minX: number; maxX: number; minY: number; maxY: number } {
+  const dx = ex - px, dy = ey - py;
+  const L = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / L) * halfThick, ny = (dx / L) * halfThick;
+  const x0 = px + nx, x1 = ex + nx, x2 = ex - nx, x3 = px - nx;
+  const y0 = py + ny, y1 = ey + ny, y2 = ey - ny, y3 = py - ny;
+  return {
+    minX: Math.min(x0, x1, x2, x3), maxX: Math.max(x0, x1, x2, x3),
+    minY: Math.min(y0, y1, y2, y3), maxY: Math.max(y0, y1, y2, y3),
+  };
+}
+
 export class Tracer extends Behavior {
   kind = "Tracer";
   /** Disambiguates when a sprite has multiple tracers. Used by the SM read
@@ -601,14 +621,29 @@ export class Tracer extends Behavior {
         }
       }
     }
-    const px = originX + this.pivotX * facingSign;
-    const py = originY + this.pivotY;
+    // Fold the host scale so the trace reach + pivot offset + box thickness grow
+    // WITH the BP when it's scaled (a bigger character has a proportionally
+    // bigger reach). facingScaleX is the mirror sign (±1), handled by facingSign,
+    // so use abs for the magnitude. Image-point origins are already in scaled
+    // world space; only the ADDED pivot offset + reach need folding here.
+    const sx = (Math.abs(obj.scaleX) || 1) * (this.sprite._renderScaleX || 1);
+    const sy = (Math.abs(obj.scaleY) || 1) * (this.sprite._renderScaleY || 1);
+    const px = originX + this.pivotX * facingSign * sx;
+    const py = originY + this.pivotY * sy;
     const angleRad = (this.angle * Math.PI) / 180;
     const dirX = Math.cos(angleRad) * facingSign;
     const dirY = Math.sin(angleRad);
-    const ex = px + dirX * this.distance;
-    const ey = py + dirY * this.distance;
-    return { px, py, ex, ey, thick: this.boxThickness };
+    const ex = px + dirX * this.distance * sx;
+    const ey = py + dirY * this.distance * sy;
+    return { px, py, ex, ey, thick: this.boxThickness * ((sx + sy) / 2) };
+  }
+
+  /** Box thickness folded by the host scale (matches `_calcGeom().thick`). The
+   *  detection samplers MUST use this — not raw `boxThickness` — so a scaled BP's
+   *  hit area matches its drawn tracer. `_lastTraceGeom` is set by `_sampleNow`
+   *  just before any sampler runs; fall back to the raw value defensively. */
+  private _scaledThick(): number {
+    return this._lastTraceGeom?.thick ?? this.boxThickness;
   }
 
   /** Iterate scene sprites, return EVERY overlapping target (not just the
@@ -617,16 +652,13 @@ export class Tracer extends Behavior {
    *  can still take [0] for the "primary" hit. */
   private _sampleAll(px: number, py: number, ex: number, ey: number): TracerHit[] {
     const filterTags = this._filterTags();
-    const halfThick = this.shape === "box" ? this.boxThickness / 2 : 0;
+    const halfThick = this.shape === "box" ? this._scaledThick() / 2 : 0;
     const midX = (px + ex) * 0.5;
     const midY = (py + ey) * 0.5;
     const queryRadius = Math.hypot(ex - px, ey - py) * 0.5 + halfThick;
     const candidates = this._candidates(filterTags, midX, midY, queryRadius);
 
-    const traceMinX = Math.min(px, ex) - halfThick;
-    const traceMaxX = Math.max(px, ex) + halfThick;
-    const traceMinY = Math.min(py, ey) - halfThick;
-    const traceMaxY = Math.max(py, ey) + halfThick;
+    const { minX: traceMinX, maxX: traceMaxX, minY: traceMinY, maxY: traceMaxY } = boxTraceAABB(px, py, ex, ey, halfThick);
 
     const hits: TracerHit[] = [];
     for (const s of candidates) {
@@ -679,6 +711,7 @@ export class Tracer extends Behavior {
         hits.push(hit);
       }, /* closestOnly */ false);
     }
+    for (const h of this._placementHits(px, py, ex, ey, filterTags)) hits.push(h);
     hits.sort((a, b) => a.distance - b.distance);
     return hits;
   }
@@ -690,16 +723,13 @@ export class Tracer extends Behavior {
    *  overlaps). */
   private _sample(px: number, py: number, ex: number, ey: number): TracerHit | null {
     const filterTags = this._filterTags();
-    const halfThick = this.shape === "box" ? this.boxThickness / 2 : 0;
+    const halfThick = this.shape === "box" ? this._scaledThick() / 2 : 0;
     const midX = (px + ex) * 0.5;
     const midY = (py + ey) * 0.5;
     const queryRadius = Math.hypot(ex - px, ey - py) * 0.5 + halfThick;
     const candidates = this._candidates(filterTags, midX, midY, queryRadius);
 
-    const traceMinX = Math.min(px, ex) - halfThick;
-    const traceMaxX = Math.max(px, ex) + halfThick;
-    const traceMinY = Math.min(py, ey) - halfThick;
-    const traceMaxY = Math.max(py, ey) + halfThick;
+    const { minX: traceMinX, maxX: traceMaxX, minY: traceMinY, maxY: traceMaxY } = boxTraceAABB(px, py, ex, ey, halfThick);
 
     let best: TracerHit | null = null;
     let bestDist = Infinity;
@@ -779,7 +809,7 @@ export class Tracer extends Behavior {
     if (navGrid && filterTags.length > 0) {
       // BOX tracers test their whole rectangle; LINE tracers test the segment.
       const isBox = this.shape === "box";
-      const halfT = this.boxThickness / 2;
+      const halfT = this._scaledThick() / 2;
       const bMinX = Math.min(px, ex) - halfT, bMinY = Math.min(py, ey) - halfT;
       const bMaxX = Math.max(px, ex) + halfT, bMaxY = Math.max(py, ey) + halfT;
       for (const o of navGrid.obstacles) {
@@ -800,7 +830,50 @@ export class Tracer extends Behavior {
         if (dist < bestDist) { bestDist = dist; best = { hitX: w.x, hitY: w.y, actorX: w.x, actorY: w.y, actorName: w.name || w.tags[0] || "wp", actorUid: -1, actorTags: [...w.tags], distance: dist }; }
       }
     }
+    for (const h of this._placementHits(px, py, ex, ey, filterTags)) {
+      if (h.distance < bestDist) { bestDist = h.distance; best = h; }
+    }
     return best;
+  }
+
+  /** Sprite-object pass — a collidable Sprite Object placement reads like a BP
+   *  Collider here: bounds-test its physics body against the trace, honor the
+   *  tag filter against the placement's runtime tags (`peaky.tags`), and report
+   *  the hit with `actorUid = -1` (non-sprite, like tiles / nav). Same include
+   *  rule as the sprite pass: empty filter = any solid thing, else require a tag
+   *  match. v1 iterates `peaky.placementsBySpriteId` directly — placement counts
+   *  are small and `HasSpriteObjectTag` already scans this way. */
+  private _placementHits(px: number, py: number, ex: number, ey: number, filterTags: string[]): TracerHit[] {
+    const idx = this.sprite.scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+    if (!idx || idx.size === 0) return [];
+    const isBox = this.shape === "box";
+    const bounds = isBox ? boxTraceAABB(px, py, ex, ey, this._scaledThick() / 2) : null;
+    const line = isBox ? null : new Phaser.Geom.Line(px, py, ex, ey);
+    const out: TracerHit[] = [];
+    for (const [spriteId, list] of idx) {
+      for (const go of list) {
+        const body = go.body as Phaser.Physics.Arcade.Body | null;
+        if (!body || body.enable === false) continue;
+        const tags = (go.getData("peaky.tags") as string[] | undefined) ?? [];
+        if (filterTags.length > 0 && !tags.some((t) => filterTags.indexOf(t) >= 0)) continue;
+        const bx = body.x, by = body.y, bw = body.width, bh = body.height;
+        const br = bx + bw, bb = by + bh;
+        let hx = 0, hy = 0, hd = Infinity;
+        if (isBox && bounds) {
+          if (bounds.minX >= br || bounds.maxX <= bx || bounds.minY >= bb || bounds.maxY <= by) continue;
+          hx = px < bx ? bx : px > br ? br : px;
+          hy = py < by ? by : py > bb ? bb : py;
+          hd = Math.hypot(hx - px, hy - py);
+        } else if (line) {
+          const o: Phaser.Geom.Point[] = [];
+          Phaser.Geom.Intersects.GetLineToRectangle(line, new Phaser.Geom.Rectangle(bx, by, bw, bh), o);
+          if (o.length === 0) continue;
+          for (const p of o) { const d = Math.hypot(p.x - px, p.y - py); if (d < hd) { hd = d; hx = p.x; hy = p.y; } }
+        }
+        out.push({ hitX: hx, hitY: hy, actorX: hx, actorY: hy, actorName: go.name || spriteId, actorUid: -1, actorTags: [...tags], distance: hd });
+      }
+    }
+    return out;
   }
 
   /** Sample the trace geometry against every Phaser tilemap layer. Walks
@@ -827,11 +900,9 @@ export class Tracer extends Behavior {
     // row the CENTRE line passes through, which is why a tall box "only hit at
     // the level where it spawned" until the player lined up with the tile.
     if (this.shape === "box") {
-      const halfThick = this.boxThickness / 2;
-      const bMinX = Math.min(px, ex) - halfThick;
-      const bMinY = Math.min(py, ey) - halfThick;
-      const bW = Math.abs(ex - px) + this.boxThickness;
-      const bH = Math.abs(ey - py) + this.boxThickness;
+      const { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY } = boxTraceAABB(px, py, ex, ey, this._scaledThick() / 2);
+      const bW = bMaxX - bMinX;
+      const bH = bMaxY - bMinY;
       for (let li = 0; li < layers.length; li++) {
         const tiles = layers[li].getTilesWithinWorldXY(bMinX, bMinY, bW, bH);
         for (const tile of tiles) {
@@ -908,13 +979,13 @@ export class Tracer extends Behavior {
    *  Null for line tracers (those use `mineSegment`). */
   mineBox(): { x: number; y: number; w: number; h: number } | null {
     if (this.shape !== "box") return null;
-    const { px, py, ex, ey } = this._calcGeom();
-    const halfThick = this.boxThickness / 2;
+    const { px, py, ex, ey, thick } = this._calcGeom();
+    const halfThick = thick / 2;
     return {
       x: Math.min(px, ex) - halfThick,
       y: Math.min(py, ey) - halfThick,
-      w: Math.abs(ex - px) + this.boxThickness,
-      h: Math.abs(ey - py) + this.boxThickness,
+      w: Math.abs(ex - px) + thick,
+      h: Math.abs(ey - py) + thick,
     };
   }
 
@@ -933,7 +1004,7 @@ export class Tracer extends Behavior {
     // last-seen position (SpriteRenderer.getImagePointWorld), so even when a
     // signal-driven Mine runs a frame after the attack frame has passed, the
     // origin stays on the trace instead of snapping to sprite center.
-    const { px, py, ex, ey } = this._calcGeom();
+    const { px, py, ex, ey, thick } = this._calcGeom();
     const seen = new Set<string>();
     const push = (li: number, tile: Phaser.Tilemaps.Tile | null): void => {
       if (!tile || tile.index < 0) return;
@@ -944,11 +1015,11 @@ export class Tracer extends Behavior {
       out.push({ x: wp.x + tile.width / 2, y: wp.y + tile.height / 2 });
     };
     if (this.shape === "box") {
-      const halfThick = this.boxThickness / 2;
+      const halfThick = thick / 2;
       const minX = Math.min(px, ex) - halfThick;
       const minY = Math.min(py, ey) - halfThick;
-      const w = Math.abs(ex - px) + this.boxThickness;
-      const h = Math.abs(ey - py) + this.boxThickness;
+      const w = Math.abs(ex - px) + thick;
+      const h = Math.abs(ey - py) + thick;
       for (let li = 0; li < layers.length; li++) {
         for (const tile of layers[li].getTilesWithinWorldXY(minX, minY, w, h)) push(li, tile);
       }
@@ -1084,11 +1155,7 @@ export class Tracer extends Behavior {
     if (!this._gfx) return;
     this._gfx.lineStyle(width, color, alpha);
     if (this.shape === "box") {
-      const halfThick = thick / 2;
-      const minX = Math.min(px, ex) - halfThick;
-      const maxX = Math.max(px, ex) + halfThick;
-      const minY = Math.min(py, ey) - halfThick;
-      const maxY = Math.max(py, ey) + halfThick;
+      const { minX, maxX, minY, maxY } = boxTraceAABB(px, py, ex, ey, thick / 2);
       this._gfx.strokeRect(minX, minY, maxX - minX, maxY - minY);
     } else {
       this._gfx.beginPath();

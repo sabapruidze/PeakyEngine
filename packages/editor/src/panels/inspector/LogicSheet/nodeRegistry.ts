@@ -101,6 +101,9 @@ const CURATED_CONDITION_KINDS: ReadonlySet<string> = new Set<string>([
   // Scene-name compare.
   "IsScene",
   // Sprite Object triggers — curated with the placement dropdown.
+  // Collide/Overlap are RETIRED from the palette (unified into On Collide /
+  // On Overlap [tag] via firePlacementContact) but stay here so the generator
+  // doesn't resurrect them as generic nodes; old saves still load via runtime.
   "OnCollideWithSpriteObject", "OnOverlapWithSpriteObject",
   "OnSpriteObjectCreate", "OnSpriteObjectDestroy",
   "HasSpriteObjectTag",
@@ -352,7 +355,7 @@ const ACTION_TO_COMPONENT: Record<string, string> = {
   CameraFlash: "Camera", CameraFade: "Camera",
   CameraLock: "Camera", CameraUnlock: "Camera",
   CameraPanTo: "Camera", CameraPanToTag: "Camera",
-  BlurScene: "Camera", SetScreenEffect: "Camera",
+  BlurScene: "Camera", SetScreenEffect: "Camera", SetAmbientLight: "Camera",
   // Tracer
   TracerGetResult: "Tracer",
   TracerSet: "Tracer",
@@ -383,6 +386,7 @@ const ACTION_TO_COMPONENT: Record<string, string> = {
   TweenStop: "Tween", TweenStopAll: "Tween",
   TweenPause: "Tween", TweenPauseAll: "Tween",
   TweenResume: "Tween", TweenResumeAll: "Tween",
+  TweenVar: "Tween", TweenParam: "Tween",
   // SquashStretch
   PlaySquashStretch: "SquashStretch",
   // Variables
@@ -393,7 +397,7 @@ const ACTION_TO_COMPONENT: Record<string, string> = {
   // Transform
   SetPosition: "Transform", SetPositionX: "Transform", SetPositionY: "Transform",
   SetAngle: "Transform", SetScale: "Transform", SetScaleX: "Transform", SetScaleY: "Transform",
-  SetOpacity: "Transform", MoveToLayer: "Transform", SetZOrder: "Transform",
+  SetOpacity: "Transform", SetVisible: "Transform", MoveToLayer: "Transform", SetZOrder: "Transform",
   // Time
   Wait: "Time", WaitRealtime: "Time", WaitForSignal: "Time", SetTimeScale: "Time",
   HitStop: "Time",
@@ -431,7 +435,8 @@ const ACTION_TO_COMPONENT: Record<string, string> = {
   SetTileAtWorld: "Tilemap", RemoveTileAtWorld: "Tilemap",
   FillTileRect: "Tilemap", ReplaceTile: "Tilemap",
   RemoveTilesInTracer: "Tilemap", FillTilesInTracer: "Tilemap",
-  PlaceBigTile: "Tilemap", RemoveBigTileAtWorld: "Tilemap", RemoveBigTileAt: "Tilemap",
+  PlaceBigTile: "Tilemap", PlaceBigTileAtWorld: "Tilemap", PlaceAnimatedTileAtWorld: "Tilemap",
+  RemoveBigTileAtWorld: "Tilemap", RemoveBigTileAt: "Tilemap",
   DamageTile: "Tilemap", DamageTileAtWorld: "Tilemap",
   MineTileAtWorld: "Tilemap", RestoreTileHP: "Tilemap",
   PlayTileAnimation: "Tilemap", PlayTileAnimationAtWorld: "Tilemap",
@@ -460,7 +465,9 @@ const ACTION_TO_COMPONENT: Record<string, string> = {
   Literal: "Variables", VarRead: "Variables",
   GetTracerField: "Tracer", GetSlotItem: "Inventory",
   GetListValue: "System", GetGlobalValue: "System",
+  GetDistance: "System",
   GetOtherObject: "Collider",
+  GetOverlappingObject: "Collider",
   GetPicked: "Collider",
   RandomPick: "Variables", RandomRange: "Variables",
 };
@@ -536,6 +543,7 @@ const CONDITION_TO_COMPONENT: Record<string, string> = {
   Compare: "Variables", CompareValues: "Variables", IsBoolean: "Variables", IsBetween: "Variables",
   // Mouse
   IsMouseButtonHeld: "Mouse", IsCursorOverObject: "Mouse",
+  OnObjectHovered: "Mouse", OnObjectUnhovered: "Mouse", GetHoveredObject: "Mouse",
   // Picking — keep under Flow since they aren't component-tied
   // Tilemap conditions
   CompareTileAt: "Tilemap", CompareTileAtWorld: "Tilemap",
@@ -600,6 +608,8 @@ export const LABEL_OVERRIDES: Record<string, string> = {
   // graphs + runtime don't break.
   SetBehaviorParam: "Set Component Parameter",
   SetBehaviorEnabled: "Enable / Disable Component",
+  TweenVar: "Tween Variable (smooth)",
+  TweenParam: "Tween Component Param (smooth)",
   // `OnSeparate` is the overlap-END edge (fires when two bodies stop
   // overlapping). Authors look for "end overlap", so label it that way — the
   // node TYPE stays "OnSeparate" so saved graphs + the runtime signal don't break.
@@ -627,6 +637,8 @@ export const LABEL_OVERRIDES: Record<string, string> = {
   RemoveTile: "Remove Tile (cell c,r)",
   RemoveTileAtWorld: "Remove Tile (world x,y)",
   PlaceBigTile: "Place BigTile (cell c,r)",
+  PlaceBigTileAtWorld: "Place BigTile (world x,y)",
+  PlaceAnimatedTileAtWorld: "Place Animated Tile (world x,y)",
   RemoveBigTileAt: "Remove BigTile (cell c,r)",
   RemoveBigTileAtWorld: "Remove BigTile (world x,y)",
   PlayTileAnimation: "Play Tile Animation (cell c,r)",

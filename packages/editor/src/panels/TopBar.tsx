@@ -518,32 +518,39 @@ export function TopBar() {
   // mutation, "saving" during the write, "saved" once the write
   // completed. Drives the beforeunload guard too.
   const [saveStatus, setSaveStatus] = useState<"saved" | "dirty" | "saving">("saved");
+  const autosaveHandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Autosave the project on any mutation, debounced. Required for folder
-  // mode because disk writes happen IMMEDIATELY for asset content (frame
-  // PNGs, audio files, tileset images) and for asset folder renames. Without
-  // this a reload-before-Ctrl+S would diverge: JSON references the old
-  // name, disk has the new folder. The debounce keeps the write off the
-  // hot path while the user is making rapid edits.
+  // Autosave the project ~every 3 minutes. Required for folder mode because
+  // disk writes happen IMMEDIATELY for asset content (frame PNGs, audio files,
+  // tileset images) and for asset folder renames; without a periodic JSON
+  // flush a reload-before-Ctrl+S would diverge (JSON references the old name,
+  // disk has the new folder). saveProjectToFolder only rewrites assets whose
+  // object reference changed, so a save is cheap, but at this cadence it stays
+  // well off the hot path even on a large project. The beforeunload guard
+  // below covers edits made inside the 3-minute window.
+  //
+  // The timer is scheduled from the FIRST unsaved edit and is NOT reset by
+  // later edits (the ref guard) — a plain debounce would never fire while the
+  // author keeps editing.
   useEffect(() => {
     const store = getActiveAssetStore();
     if (!store) return;
-    // Skip the initial mount — project hasn't mutated yet, no need to mark
-    // dirty. Subsequent runs (when [project] changes) flip to "dirty" until
-    // the timer fires.
     setSaveStatus("dirty");
-    let handle: ReturnType<typeof setTimeout>;
+    if (autosaveHandleRef.current) return;
     const tryRun = () => {
-      // Don't save while any folder rename / copy / dir-delete is mid-
-      // flight. Saving the manifest in that window would point metadata
-      // at a partially-populated destination; on next load the GC would
-      // see real binary files as unreferenced and delete them.
-      if (store.isDiskBusy) {
-        handle = setTimeout(tryRun, 250);
+      const s = getActiveAssetStore();
+      if (!s) { autosaveHandleRef.current = null; return; }
+      // Don't save while any folder rename / copy / dir-delete is mid-flight.
+      // Saving the manifest in that window would point metadata at a partially-
+      // populated destination; on next load the GC would see real binary files
+      // as unreferenced and delete them.
+      if (s.isDiskBusy) {
+        autosaveHandleRef.current = setTimeout(tryRun, 1000);
         return;
       }
+      autosaveHandleRef.current = null;
       setSaveStatus("saving");
-      void saveProjectToFolder(store, useEditor.getState().project)
+      void saveProjectToFolder(s, useEditor.getState().project)
         .then(() => {
           setSaveStatus("saved");
           // Make the autosaveStatus badge truthful — this is now the only
@@ -561,8 +568,7 @@ export function TopBar() {
           });
         });
     };
-    handle = setTimeout(tryRun, 800);
-    return () => clearTimeout(handle);
+    autosaveHandleRef.current = setTimeout(tryRun, 3 * 60 * 1000);
   }, [project]);
 
   // beforeunload safety net: warn if the page is about to unload with
@@ -590,6 +596,10 @@ export function TopBar() {
         display: "flex",
         alignItems: "center",
         gap: 14,
+        // Grid-row item defaults to min-width:auto and would force the column
+        // wider than the viewport when the tab bar grows. minWidth:0 lets it
+        // shrink so the TabBar wrapper's overflow:hidden is the binding cap.
+        minWidth: 0,
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>

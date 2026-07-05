@@ -341,6 +341,8 @@ interface EditorState {
   /** Set walkability for a batch of cells. Value: 0=blocked, 1=linear (green,
    *  sharp turns), 2=curved (yellow, rounded turns). 1 & 2 are both walkable. */
   paintNavWalkable: (sceneId: string, cells: { c: number; r: number; walkable: number }[]) => void;
+  /** Paint the SHELTER mask (weather-blocked cells). on: 1 = shelter, 0 = clear. */
+  paintNavShelter: (sceneId: string, cells: { c: number; r: number; on: number }[]) => void;
   /** Change grid resolution; resamples the painted walkable mask so paint survives. */
   setNavCellSize: (sceneId: string, cellSize: number) => void;
   /** Resize the nav AREA in world px (for unbounded maps bigger than the layout).
@@ -1190,7 +1192,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       proposedName = "World_2";
     }
     proposedName = sanitizeAssetName(proposedName, "Blueprint");
+    // Spread `partial` first so class-template / caller fields that aren't in
+    // the explicit list below (affectedByGravity, logicSheet, cullMode,
+    // poolSize, noPhysicsBody, hideRect, …) actually land instead of being
+    // silently dropped. The explicit keys then override with sanitized /
+    // defaulted values, and `id` overrides any stray id on the partial.
     const bp: BlueprintDef = {
+      ...partial,
       id,
       name: proposedName,
       classKind: partial.classKind ?? "Actor",
@@ -1329,9 +1337,31 @@ export const useEditor = create<EditorState>((set, get) => ({
         children: remapEventPages(ev.children),
       }));
     clone.events = remapEventPages(clone.events);
-    // Logic Sheet node/edge ids are scoped per-folder-graph, so two BPs
-    // can carry identical internal ids without conflict at runtime — no
-    // remap needed. The deep clone already gave the copy its own arrays.
+    // Logic Sheet: regenerate folder ids (+ node/edge ids) so the copy shares
+    // NO ids with the source. Folder ids double as the editor's canvas key and
+    // per-owner open-folder key, so identical ids across two BPs made edits in
+    // one bleed into the other (and nodes vanish on save). Edges are re-pointed
+    // through the node-id map so exec/data wiring survives the remap.
+    if (clone.logicSheet?.folders) {
+      clone.logicSheet = {
+        ...clone.logicSheet,
+        folders: clone.logicSheet.folders.map((f) => {
+          const idMap = new Map<string, string>();
+          const nodes = f.graph.nodes.map((n) => {
+            const nid = newId("node");
+            idMap.set(n.id, nid);
+            return { ...n, id: nid };
+          });
+          const edges = f.graph.edges.map((e) => ({
+            ...e,
+            id: newId("edge"),
+            source: idMap.get(e.source) ?? e.source,
+            target: idMap.get(e.target) ?? e.target,
+          }));
+          return { ...f, id: newId("folder"), graph: { nodes, edges } };
+        }),
+      };
+    }
     // Insert directly AFTER the source so the duplicate appears adjacent
     // in the Content Browser / outliner.
     set((state) => {
@@ -4563,6 +4593,23 @@ export const useEditor = create<EditorState>((set, get) => ({
       },
     })),
 
+  paintNavShelter: (sceneId, cells) =>
+    set((state) => ({
+      project: {
+        ...state.project,
+        scenes: state.project.scenes.map((sc) => {
+          if (sc.id !== sceneId || !sc.navMesh) return sc;
+          const nm = sc.navMesh;
+          const shelter = (nm.shelter ?? new Array(nm.cols * nm.rows).fill(0)).slice();
+          for (const { c, r, on } of cells) {
+            if (c < 0 || c >= nm.cols || r < 0 || r >= nm.rows) continue;
+            shelter[r * nm.cols + c] = on;
+          }
+          return { ...sc, navMesh: { ...nm, shelter } };
+        }),
+      },
+    })),
+
   setNavCellSize: (sceneId, cellSize) =>
     set((state) => ({
       project: {
@@ -4582,7 +4629,19 @@ export const useEditor = create<EditorState>((set, get) => ({
             const or = Math.floor((r * cs + cs / 2) / old.cellSize);
             if (oc >= 0 && oc < old.cols && or >= 0 && or < old.rows && old.walkable[or * old.cols + oc]) walkable[r * cols + c] = 1;
           }
-          return { ...sc, navMesh: { ...old, cellSize: cs, cols, rows, walkable } };
+          let shelter: number[] | undefined;
+          if (old.shelter) {
+            shelter = new Array(cols * rows).fill(0);
+            for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+              const oc = Math.floor((c * cs + cs / 2) / old.cellSize);
+              const or = Math.floor((r * cs + cs / 2) / old.cellSize);
+              if (oc >= 0 && oc < old.cols && or >= 0 && or < old.rows) {
+                const ov = old.shelter[or * old.cols + oc];
+                if (ov) shelter[r * cols + c] = ov;
+              }
+            }
+          }
+          return { ...sc, navMesh: { ...old, cellSize: cs, cols, rows, walkable, shelter } };
         }),
       },
     })),
@@ -4618,7 +4677,14 @@ export const useEditor = create<EditorState>((set, get) => ({
           for (let r = 0; r < Math.min(rows, old.rows); r++) for (let c = 0; c < Math.min(cols, old.cols); c++) {
             walkable[r * cols + c] = old.walkable[r * old.cols + c];
           }
-          return { ...sc, navMesh: { ...old, cols, rows, walkable } };
+          let shelter: number[] | undefined;
+          if (old.shelter) {
+            shelter = new Array(cols * rows).fill(0);
+            for (let r = 0; r < Math.min(rows, old.rows); r++) for (let c = 0; c < Math.min(cols, old.cols); c++) {
+              shelter[r * cols + c] = old.shelter[r * old.cols + c];
+            }
+          }
+          return { ...sc, navMesh: { ...old, cols, rows, walkable, shelter } };
         }),
       },
     })),
@@ -7255,7 +7321,7 @@ function migrateProject(p: PeakyProject): PeakyProject {
     // MoveLR, Gravity, etc. — consolidated into CharacterMovement). Keep
     // this list in sync with BehaviorKind in project.ts; missing entries
     // here silently delete user-added behaviors on reload.
-    const KNOWN_KINDS = new Set<string>(["Solid", "JumpThru", "CharacterMovement", "TopdownMovement", "SpriteRenderer", "Collider", "Text", "Camera", "Tracer", "SquashStretch", "UIWidgetRenderer", "ParticleEmitter", "Damageable", "StateMachine", "AIBrain", "PhaseManager", "Widget", "SmartTween", "Projectile", "Inventory", "TilemapRenderer", "VisionMask", "MoveTo", "TiledBackground", "WeaponSlot", "Dismemberment"]);
+    const KNOWN_KINDS = new Set<string>(["Solid", "JumpThru", "CharacterMovement", "TopdownMovement", "SpriteRenderer", "Collider", "Text", "Camera", "Tracer", "SquashStretch", "UIWidgetRenderer", "ParticleEmitter", "Damageable", "StateMachine", "AIBrain", "PhaseManager", "Widget", "SmartTween", "Projectile", "Inventory", "TilemapRenderer", "VisionMask", "MoveTo", "TiledBackground", "WeaponSlot", "Dismemberment", "Outline", "Shadow", "LightSource", "Weather"]);
     const filteredBehaviors = next.behaviors.filter((b) => KNOWN_KINDS.has(b.kind));
     if (filteredBehaviors.length !== next.behaviors.length) {
       // Loud warn so a forgotten KNOWN_KINDS entry doesn't silently delete

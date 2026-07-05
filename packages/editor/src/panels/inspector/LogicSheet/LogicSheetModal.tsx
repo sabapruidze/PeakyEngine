@@ -166,7 +166,12 @@ export function LogicSheetEditor({ bp, onCommitSheet }: EditorProps) {
       }}>
         {selected ? (
           <LogicGraphCanvas
-            key={selected.id}
+            // Key by OWNER + folder. Folder ids are NOT unique across BPs
+            // (duplicateBlueprint keeps them), so keying by folder id alone made
+            // React reuse the same canvas instance when switching between a BP
+            // and its duplicate — bleeding one's nodes into the other. Including
+            // bp.id forces a fresh canvas per BP.
+            key={`${bp.id}::${selected.id}`}
             folder={selected}
             bp={bp as BlueprintDef}
             onChange={(next) => commit({

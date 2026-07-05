@@ -1130,19 +1130,17 @@ export class UIWidgetRenderer extends Behavior {
 
   // ── private helpers ────────────────────────────────────────────────
 
-  /** Emit a widget element signal. Fires on this sprite's own bus AND — for a
-   *  multi-mode child — on the parent widget's bus, so the widget's logic
-   *  sheet (which lives on the parent) hears child element signals like a
-   *  button click. Single-mode widgets host their own sheet, so the self-emit
-   *  is enough there. */
+  /** Emit a widget element signal. UI events (button click, slider change,
+   *  dropdown select…) are SCENE-WIDE, so broadcast the signal onto every live
+   *  sprite's bus — the widget's own sheet, the parent widget's sheet, AND any
+   *  blueprint listening via OnSignal. Without this a button click only reached
+   *  the widget itself, so "button → make a BP do something" never worked. */
   private emitSignal(sig: string): void {
     if (!sig) return;
     this.sprite.events.emit(sig);
-    const pid = this.sprite.parentInstanceId;
-    if (!pid) return;
     const all = (this.sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
     for (const s of all) {
-      if (!s.destroyed && s.instanceId === pid) { s.events.emit(sig); break; }
+      if (s !== this.sprite && !s.destroyed) s.events.emit(sig);
     }
   }
 

@@ -510,7 +510,7 @@ export function GenericComponentCard({
                     options={p.options}
                     value={cfg[p.key] ?? p.default}
                     sprites={sprites}
-                    currentSpriteId={String(cfg.spriteId ?? cfg.maskSpriteId ?? hostSpriteId ?? "")}
+                    currentSpriteId={String((p.animOf ? cfg[p.animOf] : (cfg.spriteId ?? cfg.maskSpriteId)) ?? hostSpriteId ?? "")}
                     variables={variables}
                     uiWidgets={uiWidgets}
                     inputActions={inputActions}
@@ -533,7 +533,7 @@ export function GenericComponentCard({
                 options={p.options}
                 value={cfg[p.key] ?? p.default}
                 sprites={sprites}
-                currentSpriteId={String(cfg.spriteId ?? cfg.maskSpriteId ?? hostSpriteId ?? "")}
+                currentSpriteId={String((p.animOf ? cfg[p.animOf] : (cfg.spriteId ?? cfg.maskSpriteId)) ?? hostSpriteId ?? "")}
                 variables={variables}
                 uiWidgets={uiWidgets}
                 inputActions={inputActions}

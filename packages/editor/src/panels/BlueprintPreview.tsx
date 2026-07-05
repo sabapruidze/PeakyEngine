@@ -37,6 +37,8 @@ type DragState = {
   | { kind: "text-offset"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
   | { kind: "emitter-offset"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
   | { kind: "visionmask-center"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
+  | { kind: "lightsource-center"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
+  | { kind: "shadow-offset"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
   | { kind: "smarttween-pivot"; axis: "x" | "y" | "xy"; origOffX: number; origOffY: number }
   | { kind: "dismember-move"; idx: number; origX: number; origY: number }
   | { kind: "dismember-resize"; idx: number; corner: "nw" | "ne" | "sw" | "se"; origX: number; origY: number; origW: number; origH: number }
@@ -141,6 +143,10 @@ export function BlueprintPreview({
   const emitterCfgRef     = useRef<Record<string, unknown>>({});
   const visionMaskIdxRef  = useRef(-1);
   const visionMaskCfgRef  = useRef<Record<string, unknown>>({});
+  const lightSourceIdxRef = useRef(-1);
+  const lightSourceCfgRef = useRef<Record<string, unknown>>({});
+  const shadowIdxRef = useRef(-1);
+  const shadowCfgRef = useRef<Record<string, unknown>>({});
   const dismemberIdxRef   = useRef(-1);
   const dismemberCfgRef   = useRef<Record<string, unknown>>({});
   const dismemberFrameRef = useRef({ w: 0, h: 0 });
@@ -190,9 +196,35 @@ export function BlueprintPreview({
   const aiBrainIdx = (typeof selectedIdx === "number" && bp.behaviors[selectedIdx]?.kind === "AIBrain")
     ? selectedIdx : -1;
   const aiBrainBh  = aiBrainIdx >= 0 ? bp.behaviors[aiBrainIdx] : undefined;
+  // Tracer shape preview — when a Tracer chip is selected, draw its actual
+  // hit geometry (line / box / circle) live so the author shapes it visually.
+  const tracerIdx = (typeof selectedIdx === "number" && bp.behaviors[selectedIdx]?.kind === "Tracer")
+    ? selectedIdx : -1;
+  const tracerBh  = tracerIdx >= 0 ? bp.behaviors[tracerIdx] : undefined;
   const vmOffX        = Number(vmCfg.centerOffsetX ?? 0);
   const vmOffY        = Number(vmCfg.centerOffsetY ?? 0);
   const vmRadius      = Number(vmCfg.radius ?? 80);
+  // LightSource center — same draggable-center pattern as VisionMask, driving
+  // its offsetX/offsetY + a ring at `radius`.
+  const lightSourceIdx = (typeof selectedIdx === "number" && bp.behaviors[selectedIdx]?.kind === "LightSource")
+    ? selectedIdx : -1;
+  const lightSourceBh  = lightSourceIdx >= 0 ? bp.behaviors[lightSourceIdx] : undefined;
+  const lsCfg          = lightSourceBh?.config ?? {};
+  const lsOffX         = Number(lsCfg.offsetX ?? 0);
+  const lsOffY         = Number(lsCfg.offsetY ?? 0);
+  const lsRadius       = Number(lsCfg.radius ?? 140);
+
+  // Shadow offset — draggable blob-shadow position (offsetX/offsetY), plus a
+  // preview of the shadow's shape/size at that point.
+  const shadowIdx      = (typeof selectedIdx === "number" && bp.behaviors[selectedIdx]?.kind === "Shadow")
+    ? selectedIdx : -1;
+  const shadowBh       = shadowIdx >= 0 ? bp.behaviors[shadowIdx] : undefined;
+  const shCfg          = shadowBh?.config ?? {};
+  const shOffX         = Number(shCfg.offsetX ?? 0);
+  const shOffY         = Number(shCfg.offsetY ?? 8);
+  const shW            = Number(shCfg.width ?? 48);
+  const shH            = Number(shCfg.height ?? 16);
+  const shShape        = String(shCfg.shape ?? "circle");
 
   // Dismemberment regions — interactive overlay. When a Dismemberment chip is
   // selected, draw each region as a draggable/resizable rectangle over the
@@ -327,6 +359,10 @@ export function BlueprintPreview({
   emitterCfgRef.current     = emitterBh?.config ?? {};
   visionMaskIdxRef.current  = visionMaskIdx;
   visionMaskCfgRef.current  = visionMaskBh?.config ?? {};
+  lightSourceIdxRef.current = lightSourceIdx;
+  lightSourceCfgRef.current = lightSourceBh?.config ?? {};
+  shadowIdxRef.current = shadowIdx;
+  shadowCfgRef.current = shadowBh?.config ?? {};
   dismemberIdxRef.current   = dismemberIdx;
   dismemberCfgRef.current   = dismemberBh?.config ?? {};
   dismemberFrameRef.current = { w: visW, h: visH };
@@ -385,6 +421,25 @@ export function BlueprintPreview({
         if (d.axis === "x" || d.axis === "xy") cfg.centerOffsetX = Math.round(d.origOffX + dx);
         if (d.axis === "y" || d.axis === "xy") cfg.centerOffsetY = Math.round(d.origOffY + dy);
         updateBlueprintBehavior(bp.id, visionMaskIdxRef.current, cfg);
+        return;
+      }
+
+      // LightSource center — drives the LightSource behavior's offsetX/offsetY.
+      if (d.kind === "lightsource-center") {
+        if (lightSourceIdxRef.current < 0) return;
+        const cfg: Record<string, unknown> = { ...lightSourceCfgRef.current };
+        if (d.axis === "x" || d.axis === "xy") cfg.offsetX = Math.round(d.origOffX + dx);
+        if (d.axis === "y" || d.axis === "xy") cfg.offsetY = Math.round(d.origOffY + dy);
+        updateBlueprintBehavior(bp.id, lightSourceIdxRef.current, cfg);
+        return;
+      }
+      // Shadow offset — drives the Shadow behavior's offsetX/offsetY.
+      if (d.kind === "shadow-offset") {
+        if (shadowIdxRef.current < 0) return;
+        const cfg: Record<string, unknown> = { ...shadowCfgRef.current };
+        if (d.axis === "x" || d.axis === "xy") cfg.offsetX = Math.round(d.origOffX + dx);
+        if (d.axis === "y" || d.axis === "xy") cfg.offsetY = Math.round(d.origOffY + dy);
+        updateBlueprintBehavior(bp.id, shadowIdxRef.current, cfg);
         return;
       }
 
@@ -520,6 +575,74 @@ export function BlueprintPreview({
         alignSelf: previewW !== null ? "flex-start" : "auto",
       }}
     >
+      {/* Tracer shape — its OWN panel above the sprite preview (drawing it over
+          the sprite was confusing). Centered on the body origin, auto-fit, live. */}
+      {tracerBh && (() => {
+        const cfg = tracerBh.config;
+        const shape = String(cfg.shape ?? "line");
+        const dist = Number(cfg.distance ?? 0);
+        const a = (Number(cfg.angle ?? 0) * Math.PI) / 180;
+        const thick = Number(cfg.boxThickness ?? 16);
+        // All pivot sources add pivotX/Y as an offset from the body center.
+        // Frame/image/weapon-slot pivots resolve to a runtime hotspot we can't
+        // know at edit time, so the schematic shows body-center + offset.
+        const offX = Number(cfg.pivotX ?? 0);
+        const offY = Number(cfg.pivotY ?? 0);
+        const W = boxWidth ?? 220, H = 150;
+        // Auto-fit, but INCLUDE the sprite body's half-extent so the body and
+        // the tracer share one scale `ps` — the panel then shows the true
+        // reach-relative-to-body ratio (the old version scaled only the tracer,
+        // so size was meaningless). Box is drawn as the runtime's axis-aligned
+        // bounding box, NOT a rotated rectangle, so the preview matches what
+        // actually hits.
+        const halfBody = Math.max(visW, visH) / 2;
+        const maxExt = Math.max(1, halfBody, Math.hypot(offX, offY) + dist + (shape === "box" ? thick / 2 : 0));
+        const ps = (Math.min(W, H) / 2 - 18) / maxExt;
+        const ox = W / 2, oy = H / 2;                      // body center
+        const px = ox + offX * ps, py = oy + offY * ps;    // tracer pivot
+        const len = dist * ps;
+        const ex = px + Math.cos(a) * len, ey = py + Math.sin(a) * len;
+        const bw = visW * ps, bh = visH * ps;              // body box, to scale
+        const C = "#ff7a00";
+        return (
+          <div style={{ marginBottom: 8, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,122,0,0.4)", background: "#14171d" }}>
+            <div style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, color: "#ffb060", background: "rgba(255,122,0,0.12)", display: "flex", justifyContent: "space-between", gap: 6 }}>
+              <span>Tracer · {String(cfg.name || "Tracer")}</span>
+              <span style={{ color: "#8b96a6", fontWeight: 400 }}>{shape} · reach {Math.round(dist)}{shape === "box" ? ` · thick ${Math.round(thick)}` : ""}</span>
+            </div>
+            <svg width={W} height={H} style={{ display: "block" }}>
+              <line x1={0} y1={oy} x2={W} y2={oy} stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
+              <line x1={ox} y1={0} x2={ox} y2={H} stroke="rgba(255,255,255,0.07)" strokeWidth={1} />
+              {/* Sprite body to scale — the size reference for the tracer. */}
+              <rect x={ox - bw / 2} y={oy - bh / 2} width={bw} height={bh} fill="rgba(94,179,255,0.08)" stroke="rgba(94,179,255,0.5)" strokeWidth={1} />
+              {dist > 0 && shape === "line" && <line x1={px} y1={py} x2={ex} y2={ey} stroke={C} strokeWidth={2.5} />}
+              {dist > 0 && shape === "box" && (() => {
+                // AABB of the oriented rectangle (length = distance, width =
+                // thickness) — matches the runtime's boxTraceAABB. Inflate only
+                // PERPENDICULAR to the reach, never along it.
+                const ht = (thick * ps) / 2;
+                const dx = ex - px, dy = ey - py;
+                const L = Math.hypot(dx, dy) || 1;
+                const nx = (-dy / L) * ht, ny = (dx / L) * ht;
+                const xs = [px + nx, ex + nx, ex - nx, px - nx];
+                const ys = [py + ny, ey + ny, ey - ny, py - ny];
+                const minX = Math.min(...xs), maxX = Math.max(...xs);
+                const minY = Math.min(...ys), maxY = Math.max(...ys);
+                return <rect x={minX} y={minY} width={maxX - minX} height={maxY - minY} fill="rgba(255,122,0,0.12)" stroke={C} strokeWidth={1.5} />;
+              })()}
+              <circle cx={ox} cy={oy} r={3.5} fill="#5eb3ff" />
+              <text x={ox + 6} y={oy - 5} fill="#5eb3ff" fontSize={9}>body</text>
+              <circle cx={px} cy={py} r={3} fill="#ffd040" />
+            </svg>
+          </div>
+        );
+      })()}
+      {/* Preview coordinate frame — wraps the clipped sprite + every overlay
+          gizmo (Y-sort line, collider / range / text arrows) + the resize
+          handles so their `top:0` origin is the PREVIEW area, not the outer
+          column. The Tracer panel above stays OUTSIDE this frame, so showing
+          it no longer shifts the Y-sort line / gizmos off the sprite. */}
+      <div style={{ position: "relative" }}>
       {/* Clipped background */}
       <div
         onWheel={onWheel}
@@ -606,6 +729,17 @@ export function BlueprintPreview({
           // silhouette (mix-blend normal), so white shows as a full-white flash.
           const pvFill = !!(hostPv && hostPv.tintFill);
           const pvTint = hostPv && typeof hostPv.tint === "number" && hostPv.tint >= 0 && (pvFill || hostPv.tint !== 0xffffff) ? hostPv.tint : -1;
+          // Outline component → a CSS drop-shadow outline on the preview sprite,
+          // so the highlight reads in the editor like it does at runtime.
+          const outlineFilter = (() => {
+            const ob = bp.behaviors.find((b) => b.kind === "Outline");
+            if (!ob || Number(ob.config.on ?? 1) === 0) return undefined;
+            const t = Math.max(0, Number(ob.config.thickness ?? 4)) * sc;
+            if (t <= 0) return undefined;
+            const c = `#${(Number(ob.config.color ?? 0xffe24a) >>> 0).toString(16).padStart(6, "0").slice(-6)}`;
+            const d = t.toFixed(1);
+            return `drop-shadow(${d}px 0 0 ${c}) drop-shadow(-${d}px 0 0 ${c}) drop-shadow(0 ${d}px 0 ${c}) drop-shadow(0 -${d}px 0 ${c}) drop-shadow(${d}px ${d}px 0 ${c}) drop-shadow(-${d}px ${d}px 0 ${c}) drop-shadow(${d}px -${d}px 0 ${c}) drop-shadow(-${d}px -${d}px 0 ${c})`;
+          })();
           return (
             <>
               {showSprite && (
@@ -622,6 +756,7 @@ export function BlueprintPreview({
                     opacity: hostPv ? hostPv.opacity : undefined,
                     transform: imgTransform,
                     transformOrigin: imgTransformOrigin,
+                    filter: outlineFilter,
                   }}
                 />
               )}
@@ -1133,6 +1268,7 @@ export function BlueprintPreview({
         );
       })()}
 
+
       {visionMaskBh && selectedIdx === visionMaskIdx && (() => {
         // Draggable reveal-center for the selected VisionMask + a ring showing
         // the radius. Cyan matches the VisionMask chip badge color.
@@ -1205,6 +1341,64 @@ export function BlueprintPreview({
             />
           </svg>
           </>
+        );
+      })()}
+
+      {lightSourceBh && selectedIdx === lightSourceIdx && (() => {
+        // Draggable light center for the selected LightSource + a ring at its
+        // radius. Warm amber matches the light glow.
+        const mx = Math.round(actorPx + lsOffX * sc);
+        const my = Math.round(actorPy + lsOffY * sc);
+        const ring = Math.max(2, Math.round(lsRadius * sc));
+        const C = "#ffcf6a";
+        return (
+          <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: previewH, overflow: "visible", pointerEvents: "none" }}>
+            <circle cx={mx} cy={my} r={ring} fill="none" stroke={C} strokeWidth={1} strokeDasharray="4 3" opacity={0.7} />
+            <line x1={mx} y1={my} x2={mx+OFFSET_ARROW} y2={my} stroke={C} strokeWidth={1.5} />
+            <polygon points={`${mx+OFFSET_ARROW},${my-OFFSET_TIP/2} ${mx+OFFSET_ARROW+OFFSET_TIP},${my} ${mx+OFFSET_ARROW},${my+OFFSET_TIP/2}`} fill={C} />
+            <line x1={mx} y1={my} x2={mx} y2={my+OFFSET_ARROW} stroke={C} strokeWidth={1.5} />
+            <polygon points={`${mx-OFFSET_TIP/2},${my+OFFSET_ARROW} ${mx},${my+OFFSET_ARROW+OFFSET_TIP} ${mx+OFFSET_TIP/2},${my+OFFSET_ARROW}`} fill={C} />
+            <circle cx={mx} cy={my} r={6} fill={C} stroke="#000" strokeWidth={1}
+              style={{ cursor: "move", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "lightsource-center", axis: "xy", startX: e.clientX, startY: e.clientY, origOffX: lsOffX, origOffY: lsOffY }, e)} />
+            <circle cx={mx+OFFSET_ARROW+OFFSET_TIP+4} cy={my} r={HANDLE_R} fill={C}
+              style={{ cursor: "ew-resize", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "lightsource-center", axis: "x", startX: e.clientX, startY: e.clientY, origOffX: lsOffX, origOffY: lsOffY }, e)} />
+            <circle cx={mx} cy={my+OFFSET_ARROW+OFFSET_TIP+4} r={HANDLE_R} fill={C}
+              style={{ cursor: "ns-resize", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "lightsource-center", axis: "y", startX: e.clientX, startY: e.clientY, origOffX: lsOffX, origOffY: lsOffY }, e)} />
+          </svg>
+        );
+      })()}
+
+      {shadowBh && selectedIdx === shadowIdx && (() => {
+        // Draggable blob-shadow position for the selected Shadow, with a preview
+        // of its actual shape/size. (The runtime also snaps Y to ground tags —
+        // that can only be shown in Play.)
+        const mx = Math.round(actorPx + shOffX * sc);
+        const my = Math.round(actorPy + shOffY * sc);
+        const rw = Math.max(2, (shW * sc) / 2);
+        const rh = Math.max(2, (shH * sc) / 2);
+        const C = "#9aa4b2";
+        return (
+          <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: previewH, overflow: "visible", pointerEvents: "none" }}>
+            {shShape === "rect"
+              ? <rect x={mx - rw} y={my - rh} width={rw * 2} height={rh * 2} fill="rgba(0,0,0,0.28)" stroke={C} strokeWidth={1} strokeDasharray="4 3" />
+              : <ellipse cx={mx} cy={my} rx={rw} ry={rh} fill="rgba(0,0,0,0.28)" stroke={C} strokeWidth={1} strokeDasharray="4 3" />}
+            <line x1={mx} y1={my} x2={mx+OFFSET_ARROW} y2={my} stroke={C} strokeWidth={1.5} />
+            <polygon points={`${mx+OFFSET_ARROW},${my-OFFSET_TIP/2} ${mx+OFFSET_ARROW+OFFSET_TIP},${my} ${mx+OFFSET_ARROW},${my+OFFSET_TIP/2}`} fill={C} />
+            <line x1={mx} y1={my} x2={mx} y2={my+OFFSET_ARROW} stroke={C} strokeWidth={1.5} />
+            <polygon points={`${mx-OFFSET_TIP/2},${my+OFFSET_ARROW} ${mx},${my+OFFSET_ARROW+OFFSET_TIP} ${mx+OFFSET_TIP/2},${my+OFFSET_ARROW}`} fill={C} />
+            <circle cx={mx} cy={my} r={6} fill={C} stroke="#000" strokeWidth={1}
+              style={{ cursor: "move", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "shadow-offset", axis: "xy", startX: e.clientX, startY: e.clientY, origOffX: shOffX, origOffY: shOffY }, e)} />
+            <circle cx={mx+OFFSET_ARROW+OFFSET_TIP+4} cy={my} r={HANDLE_R} fill={C}
+              style={{ cursor: "ew-resize", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "shadow-offset", axis: "x", startX: e.clientX, startY: e.clientY, origOffX: shOffX, origOffY: shOffY }, e)} />
+            <circle cx={mx} cy={my+OFFSET_ARROW+OFFSET_TIP+4} r={HANDLE_R} fill={C}
+              style={{ cursor: "ns-resize", pointerEvents: "all" }}
+              onMouseDown={(e) => startGizmoDrag({ kind: "shadow-offset", axis: "y", startX: e.clientX, startY: e.clientY, origOffX: shOffX, origOffY: shOffY }, e)} />
+          </svg>
         );
       })()}
 
@@ -1433,6 +1627,7 @@ export function BlueprintPreview({
           background: "rgba(255,255,255,0.18)",
         }} />
       </div>
+      </div>
     </div>
   );
 }
@@ -1466,6 +1661,10 @@ export function BehaviorKindBadge({ kind }: { kind: BehaviorKind }) {
     TiledBackground:    "#6e8ec9",
     WeaponSlot:         "#c084fc",
     Dismemberment:      "#e06a6a",
+    Outline:            "#ffe24a",
+    Shadow:             "#3a3f4a",
+    LightSource:        "#ffd9a0",
+    Weather:            "#9fc8e8",
   };
   return (
     <span style={{

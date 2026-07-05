@@ -9,7 +9,7 @@ import { spriteFrameDiskPath, tilesetImagePath } from "../AssetStore";
 import { visualCssStyle, InventoryGridPreview, inventoryFrameSize, CraftGridPreview, craftGridFrameSize } from "./UIWidgetTab";
 import { loadTilesetImage, paintLayerBuffer, type TileSlot } from "./tilemapDraw";
 import { BigTilePreview } from "./TilesetTab";
-import { brushEdits, bucketEdits, lineCells, pickerSelection, rectEdits, type RectDrag as PaintRectDrag, type Tool as PaintTool } from "./tilemapPainter";
+import { bucketEdits, lineCells, pickerSelection, rectEdits, transformedSelection, type RectDrag as PaintRectDrag, type Tool as PaintTool } from "./tilemapPainter";
 import { NavMeshOverlay, NavMeshView } from "./NavMeshOverlay";
 import {
   autoTileBrushEdits, autoTileEraseEdits, autoTileRectEdits,
@@ -247,6 +247,7 @@ export function SceneEditor() {
   const placeBigTile = useEditor((s) => s.placeBigTile);
   const removeBigTilePlacement = useEditor((s) => s.removeBigTilePlacement);
   const [paintRectDrag, setPaintRectDrag] = useState<PaintRectDrag | null>(null);
+  const [paintXf, setPaintXf] = useState(0);
   const paintLastStamp = useRef<{ col: number; row: number } | null>(null);
 
   // Resolve the selected tilemap + tileset for paint mode + the toolbar.
@@ -316,12 +317,23 @@ export function SceneEditor() {
         }
         if (accum.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, accum);
       } else {
+        // Transform the selection as ONE block (mirror/rotate cell positions),
+        // then tag every stamped cell with paintXf so it flips/rotates as a unit.
+        const sC0 = Math.min(paintSel.c0, paintSel.c1);
+        const sR0 = Math.min(paintSel.r0, paintSel.r1);
+        const selW = Math.abs(paintSel.c1 - paintSel.c0) + 1;
+        const selH = Math.abs(paintSel.r1 - paintSel.r0) + 1;
+        const tsCols = paintTileset?.cols ?? 1;
+        const { cells } = transformedSelection(selW, selH, paintXf);
         const all: { col: number; row: number; tile: number }[] = [];
         for (const cell of path) {
-          const stamps = brushEdits(cell.col, cell.row, paintSel, paintTileset?.cols ?? 1, cols, rows, paintFirstgid);
-          for (const e of stamps) all.push(e);
+          for (const t of cells) {
+            const tCol = cell.col + t.ox, tRow = cell.row + t.oy;
+            if (tCol < 0 || tCol >= cols || tRow < 0 || tRow >= rows) continue;
+            all.push({ col: tCol, row: tRow, tile: paintFirstgid + (sR0 + t.sr) * tsCols + (sC0 + t.sc) });
+          }
         }
-        if (all.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, all);
+        if (all.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, all, paintXf);
       }
     } else if (paintTool === "erase") {
       if (paintLastStamp.current && paintLastStamp.current.col === col && paintLastStamp.current.row === row) return;
@@ -489,7 +501,7 @@ export function SceneEditor() {
         if (edits.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, edits);
       } else {
         const edits = rectEdits(paintRectDrag, paintSel, paintTileset.cols, paintFirstgid);
-        if (edits.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, edits);
+        if (edits.length > 0) paintTiles(selectedTilemapMap.id, paintActiveLayerId, edits, paintXf);
       }
       setPaintRectDrag(null);
     }
@@ -588,9 +600,10 @@ export function SceneEditor() {
     origY: number;
     origW: number;
     origH: number;
-    /** Which instance kind to dispatch updates to. Placements have their
-     *  own update path (scaleX/scaleY instead of w/h). */
-    kind?: "bp" | "placement";
+    /** Which instance kind to dispatch updates to. Placements AND BP instances
+     *  both resize via scaleX/scaleY now (so the gizmo matches the inspector's
+     *  Scale X/Y and never double-scales); "bp" is the legacy w/h path. */
+    kind?: "bp" | "placement" | "bpScale";
     /** For placements: the base width/height (sprite asset size) used to
      *  convert pixel deltas into scale changes. */
     baseW?: number;
@@ -872,6 +885,18 @@ export function SceneEditor() {
           x: Math.round(cx),
           y: Math.round(cy),
         });
+      } else if (r.kind === "bpScale" && r.baseW && r.baseH) {
+        // BP instances resize into scaleX/scaleY (the field the inspector shows)
+        // and CLEAR the legacy w/h override, so the gizmo and inspector are one
+        // scale — no more "gizmo says big, inspector says 1, then ×2 compounds".
+        update(r.id, {
+          scaleX: w / r.baseW,
+          scaleY: h / r.baseH,
+          w: undefined,
+          h: undefined,
+          x: Math.round(cx),
+          y: Math.round(cy),
+        });
       } else {
         update(r.id, {
           w: Math.round(w),
@@ -1124,6 +1149,10 @@ export function SceneEditor() {
             onDoubleClick={(e) => { e.stopPropagation(); openTilemapTab(ti.id); }}
             paintActive={isPaintTarget}
             paintRectDrag={isPaintTarget ? paintRectDrag : null}
+            paintSel={isPaintTarget ? paintSel : null}
+            paintTilesetId={isPaintTarget ? (activePaintSlot?.ts.id ?? null) : null}
+            paintTool={isPaintTarget ? paintTool : undefined}
+            paintXf={isPaintTarget ? paintXf : 0}
             onPaintDown={onScenePaintDown}
             onPaintMove={onScenePaintMove}
             onPaintUp={onScenePaintUp}
@@ -1190,6 +1219,17 @@ export function SceneEditor() {
         const isCamera = bp.classKind === "Camera";
         const isControllerGizmo = isCamera;
         const showRectFill = !firstFrame?.imageFile && !hasText && !bp.hideRect && !isControllerGizmo;
+        // Outline component → CSS drop-shadow outline on the instance sprite so
+        // the highlight shows in the scene editor like it does at runtime.
+        const outlineFilter = (() => {
+          const ob = bp.behaviors.find((b) => b.kind === "Outline");
+          if (!ob || Number(ob.config.on ?? 1) === 0) return undefined;
+          const t = Math.max(0, Number(ob.config.thickness ?? 4)) * scale;
+          if (t <= 0) return undefined;
+          const c = `#${(Number(ob.config.color ?? 0xffe24a) >>> 0).toString(16).padStart(6, "0").slice(-6)}`;
+          const d = t.toFixed(1);
+          return `drop-shadow(${d}px 0 0 ${c}) drop-shadow(-${d}px 0 0 ${c}) drop-shadow(0 ${d}px 0 ${c}) drop-shadow(0 -${d}px 0 ${c}) drop-shadow(${d}px ${d}px 0 ${c}) drop-shadow(-${d}px ${d}px 0 ${c}) drop-shadow(${d}px -${d}px 0 ${c}) drop-shadow(-${d}px -${d}px 0 ${c})`;
+        })();
         // Layer-driven dim: hidden layers stay visible in editor at 30%
         // so users can still find / select them. Layer opacity multiplies in.
         const layerAlpha = (layer.visible ? 1 : 0.3) * layer.opacity;
@@ -1310,6 +1350,7 @@ export function SceneEditor() {
                   height: gizmoH * scale,
                   imageRendering: "pixelated",
                   pointerEvents: "none",
+                  filter: outlineFilter,
                   transform: (() => {
                     if (renderer?.kind !== "TiledBackground") return undefined;
                     const fx = renderer.config.flipX ? -1 : 1;
@@ -1405,6 +1446,12 @@ export function SceneEditor() {
                     if (e.button !== 0) return;
                     e.stopPropagation();
                     e.preventDefault();
+                    // Base display size (scale 1) and the CURRENT total displayed
+                    // size = base × (w/h override sX/sY) × (inst.scaleX/Y). The
+                    // drag re-expresses that total as a single scaleX/scaleY and
+                    // drops the w/h override, unifying the gizmo with the inspector.
+                    const dispBaseW = firstFrame?.imageFile ? imgW : baseW;
+                    const dispBaseH = firstFrame?.imageFile ? imgH : baseH;
                     resizeRef.current = {
                       id: inst.id,
                       handle: mode,
@@ -1412,8 +1459,11 @@ export function SceneEditor() {
                       startClientY: e.clientY,
                       origX: inst.x,
                       origY: inst.y,
-                      origW: w,
-                      origH: h,
+                      origW: dispBaseW * sX * (inst.scaleX ?? 1),
+                      origH: dispBaseH * sY * (inst.scaleY ?? 1),
+                      kind: "bpScale",
+                      baseW: dispBaseW,
+                      baseH: dispBaseH,
                     };
                     dragMoved.current = false;
                   }}
@@ -2263,6 +2313,8 @@ export function SceneEditor() {
           setActiveTilesetId={switchPaintTileset}
           tool={paintTool}
           setTool={setPaintTool}
+          xf={paintXf}
+          setXf={setPaintXf}
           selection={paintSel}
           setSelection={setPaintSel}
           activeLayerId={paintActiveLayerId}
@@ -2340,7 +2392,7 @@ export function SceneEditor() {
  *  stroke alive if the cursor leaves the canvas during a drag. */
 function ScenePlacedTilemap({
   ti, map, ts, tilesets, scale, isSelected, isLocked = false, layerAlpha, fullW, fullH, showColliders, onMouseDown, onDoubleClick,
-  paintActive = false, paintRectDrag = null, onPaintDown, onPaintMove, onPaintUp, zIndex,
+  paintActive = false, paintRectDrag = null, paintSel = null, paintTilesetId = null, paintTool, paintXf = 0, onPaintDown, onPaintMove, onPaintUp, zIndex,
 }: {
   zIndex?: number;
   ti: TilemapInstance;
@@ -2363,11 +2415,19 @@ function ScenePlacedTilemap({
   onDoubleClick: (e: MouseEvent) => void;
   paintActive?: boolean;
   paintRectDrag?: PaintRectDrag | null;
+  /** Current tile selection (in the paint tileset's cell coords) — drawn as a
+   *  ghost preview under the cursor so you see the ACTUAL tiles, not a box. */
+  paintSel?: PaintRectDrag | null;
+  paintTilesetId?: string | null;
+  paintTool?: PaintTool;
+  paintXf?: number;
   onPaintDown?: (col: number, row: number, e: MouseEvent) => void;
   onPaintMove?: (col: number, row: number) => void;
   onPaintUp?: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Hover cell for the ghost-tile paint preview (paint mode only).
+  const [hoverCell, setHoverCell] = useState<{ col: number; row: number } | null>(null);
   // Loaded atlas images keyed by tileset id — one per slot in the map's list.
   const imgsRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const [imgTick, setImgTick] = useState(0);
@@ -2541,13 +2601,52 @@ function ScenePlacedTilemap({
       ctx.lineWidth = 2;
       ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
     }
+    // Ghost tile preview — draw the ACTUAL selected tile(s) under the cursor at
+    // ~60% alpha so you see what you're painting, not just a box.
+    if (paintActive && hoverCell && paintTilesetId && !paintRectDrag) {
+      const pslot = gidSlots.find((s) => s.ts.id === paintTilesetId);
+      const pimg = pslot ? imgsRef.current.get(pslot.ts.id) : undefined;
+      const tw = ts.tileW * scale, th = ts.tileH * scale;
+      if (pslot && pimg && pimg.complete && paintSel && paintTool !== "bucket") {
+        const pts = pslot.ts;
+        const sC0 = Math.min(paintSel.c0, paintSel.c1);
+        const sR0 = Math.min(paintSel.r0, paintSel.r1);
+        const sW = Math.abs(paintSel.c1 - paintSel.c0) + 1;
+        const sH = Math.abs(paintSel.r1 - paintSel.r0) + 1;
+        const { outW, outH, cells } = transformedSelection(sW, sH, paintXf);
+        const fx = (paintXf & 1) !== 0, fy = (paintXf & 2) !== 0, rot = (paintXf >> 2) & 3;
+        ctx.globalAlpha = 0.6;
+        for (const cell of cells) {
+          const sx = pts.offsetX + (sC0 + cell.sc) * (pts.tileW + pts.spacingX);
+          const sy = pts.offsetY + (sR0 + cell.sr) * (pts.tileH + pts.spacingY);
+          const dx = (hoverCell.col + cell.ox) * tw, dy = (hoverCell.row + cell.oy) * th;
+          ctx.save();
+          ctx.translate(dx + tw / 2, dy + th / 2);
+          if (rot) ctx.rotate((rot * Math.PI) / 2);
+          ctx.scale(fx ? -1 : 1, fy ? -1 : 1);
+          ctx.drawImage(pimg, sx, sy, pts.tileW, pts.tileH, -tw / 2, -th / 2, tw, th);
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "rgba(255,210,60,0.9)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(hoverCell.col * tw + 0.75, hoverCell.row * th + 0.75, outW * tw - 1.5, outH * th - 1.5);
+      } else {
+        ctx.strokeStyle = "rgba(255,210,60,0.9)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(hoverCell.col * tw + 0.75, hoverCell.row * th + 0.75, tw - 1.5, th - 1.5);
+      }
+    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [map.layers, map.cols, map.rows, ts, scale, imgTick, tileSlots, gidSlots, paintActive, paintRectDrag]);
+  }, [map.layers, map.cols, map.rows, ts, scale, imgTick, tileSlots, gidSlots, paintActive, paintRectDrag, hoverCell, paintSel, paintTilesetId, paintTool, paintXf]);
 
   // Mouse event handler — paints when in paint mode, otherwise hands off to
   // the parent (drag-to-move). Document-level listeners during paint keep
   // the stroke alive if the cursor leaves the canvas.
   const onCanvasMouseDown = (e: MouseEvent) => {
+    // Middle-mouse always pans the viewport, even while painting — so you can
+    // scroll around a big map without dropping tiles. Left-mouse paints.
+    if (e.button === 1) { onMouseDown(e); return; }
     if (!paintActive || !onPaintDown) { onMouseDown(e); return; }
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -2678,6 +2777,17 @@ function ScenePlacedTilemap({
       <canvas
         ref={canvasRef}
         onMouseDown={onCanvasMouseDown}
+        onMouseMove={(e) => {
+          if (!paintActive) { if (hoverCell) setHoverCell(null); return; }
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          const col = Math.floor((e.clientX - rect.left) / (ts.tileW * scale));
+          const row = Math.floor((e.clientY - rect.top) / (ts.tileH * scale));
+          if (col < 0 || col >= map.cols || row < 0 || row >= map.rows) { if (hoverCell) setHoverCell(null); return; }
+          if (!hoverCell || hoverCell.col !== col || hoverCell.row !== row) setHoverCell({ col, row });
+        }}
+        onMouseLeave={() => { if (hoverCell) setHoverCell(null); }}
         onDoubleClick={onDoubleClick}
         style={{
           display: "block",
@@ -2726,7 +2836,7 @@ function ScenePlacedTilemap({
  *  reset-zoom toggles in the top-right. */
 function InScenePaintToolbar({
   vpBox, map, tileset, tilesetOptions, activeTilesetId, setActiveTilesetId,
-  tool, setTool, selection, setSelection, activeLayerId, setActiveLayerId,
+  tool, setTool, xf, setXf, selection, setSelection, activeLayerId, setActiveLayerId,
   terrainId, setTerrainId, bigTileId, setBigTileId, onClose,
 }: {
   vpBox: { left: number; top: number; right: number };
@@ -2737,6 +2847,8 @@ function InScenePaintToolbar({
   setActiveTilesetId: (id: string) => void;
   tool: PaintTool;
   setTool: (t: PaintTool) => void;
+  xf: number;
+  setXf: (updater: (v: number) => number) => void;
   selection: PaintRectDrag;
   setSelection: (s: PaintRectDrag) => void;
   activeLayerId: string;
@@ -2818,6 +2930,35 @@ function InScenePaintToolbar({
             }}
           >{t}</button>
         ))}
+      </div>
+
+      {/* Transform — flip/rotate the brush as a unit (also applies to rect fill).
+          Bits: 1 = flipX, 2 = flipY, (v>>2)&3 = rotation ×90° CW. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+        {([
+          ["↻ 90°", (v: number) => (v & 3) | (((((v >> 2) & 3) + 1) & 3) << 2), ((xf >> 2) & 3) !== 0],
+          ["⇄ H", (v: number) => v ^ 1, (xf & 1) !== 0],
+          ["⇅ V", (v: number) => v ^ 2, (xf & 2) !== 0],
+        ] as [string, (v: number) => number, boolean][]).map(([label, fn, active]) => (
+          <button
+            key={label}
+            onClick={() => setXf(fn)}
+            style={{
+              flex: 1, fontSize: 10, padding: "3px 4px", cursor: "pointer",
+              background: active ? "var(--teal)" : "var(--inner)",
+              color: active ? "var(--frame)" : "var(--text)",
+              border: `1px solid ${active ? "var(--teal)" : "var(--border)"}`,
+              borderRadius: 3,
+            }}
+          >{label}</button>
+        ))}
+        {xf !== 0 && (
+          <button
+            onClick={() => setXf(() => 0)}
+            title="Reset transform"
+            style={{ fontSize: 10, padding: "3px 6px", cursor: "pointer", background: "var(--inner)", color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 3 }}
+          >↺</button>
+        )}
       </div>
 
       {bigTiles.length > 0 && (

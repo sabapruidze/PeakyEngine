@@ -16,6 +16,161 @@ editing — the engine has dense plumbing and the registries below are the
 
 ---
 
+## 0. Latest session (2026-07-03) — read this first
+
+Big engine work. See `docs/API_REFERENCE.md` for the full node/component/class
+reference (AI-oriented). Highlights, grouped:
+
+**Fast scene transitions (persistent game) — PARTIAL, Stages 0–2 shipped, Stage 3
+pending.** Previously EVERY scene change did `game.destroy()` + `new Phaser.Game`
+(re-uploads all textures → ~100–500ms "loading" feel). Now the game persists and
+the scene rebuilds IN PLACE via `scene.restart()` — the same path `RestartLayout`
+always used. Key pieces:
+- `runtime/Game.ts`: `Peaky` stores a MUTABLE builder (`_builder`/`_preload`);
+  `MainScene.create()`/`preload()` call the STORED ones. New `setBuilder()` +
+  `gotoScene(build, preload)` (= setBuilder then `scene.restart()`). `create()` now
+  also runs an EXTENDED reset list — hitstop (else new scene FREEZES), camera
+  (zoom/follow/scroll + `peaky.camera` cache — the "camera zoom across transitions"
+  bug), mouse/input, tilemap registries, placement callbacks, pause flags. Textures
+  stay on the GPU (stable keys + `textures.exists`).
+- `editor/runProject.ts`: the giant `game.start` closure was extracted into
+  `makeSceneBuilder(project, scene, parent)` → `{ build, preload, effectiveScene }`.
+  `runScene` = initial boot (new game). `buildSceneOn(game, project, scene, parent)`
+  = transition (calls `game.gotoScene`). Builder captures `project`, `scene`, `parent`.
+- `editor/ScenePanel.tsx`: `transitionTo()` rebuilds on the existing game (keeps
+  `gameRef`/`__peakyGame`), behind a `FAST_TRANSITIONS` fallback flag; `boot` (cold
+  destroy+new) is now only for initial Play / Stop→Play / loader boot. The
+  outgoing-scene snapshot COVER + `peaky:sceneReady` gate still hide the 1-frame
+  rebuild (cover now `background-size: contain`, fixing a zoom artifact).
+- `runtime/behaviors/ParticleEmitter.ts`: packed-frame texture key is now
+  DETERMINISTIC (hash of frame indices) — the old `Math.random()` suffix leaked one
+  canvas per scene visit on a persistent game.
+- **STILL TODO (Stage 3):** route `GoToLayoutWithLoad` loader in-place; add CHOOSABLE
+  music (persist vs stop per transition — user wants a toggle on Door + GoToLayout);
+  retire the `FAST_TRANSITIONS` flag; audit `scene.events.on` in the builder for a
+  matching SHUTDOWN-`off` (a missed one leaks a listener per transition). See
+  `FOLLOWUPS.md`. Risk = leaks if a registry isn't reset — the reset list is the fix.
+
+**Trigger + Door (one unified object).**
+- New **`Trigger` blueprint class** (`blueprintClasses.ts`) — invisible (`hideRect`),
+  gravity-off, box **sensor** `Collider` (passThrough), tag `trigger`. Drop-in volume;
+  wire `OnOverlap`/`On End Overlap (=OnSeparate)`/`OnOverlapForSeconds`.
+- New node **`OnOverlapForSeconds`** (LogicTriggerKind-only — LogicSheetRunner + palette
+  + nodeDocs; NOT in shared condition.ts) — fires once after continuous overlap N sec,
+  gated on `CollisionScan._currOverlap`. Mirrors `OnKeyHeldFor`'s timer.
+- **Door** = a Trigger instance with a `door?: DoorLink` (schema on `BlueprintInstance`,
+  `project.ts`): `{ name, destSceneId, destDoor, withLoad, travelerTag, activation:
+  instant|delay|input, delaySec, inputAction }`. Runtime `runDoorScan(sprites)` in
+  `eval.ts` (called each frame after `runCollisionScan` in `Game.ts`): fires on the
+  ENTER edge; **arm-on-exit** for instant/delay (arriving on a door doesn't bounce);
+  **input mode is exempt** (no leave/re-enter — tap key each time; eats the arrival
+  frame so a held key across a rebuild doesn't bounce). SAME-scene link = in-place
+  teleport (no reload). Cross-scene = `emitGoToScene`/`WithLoad` + `setPendingEntry`
+  (PersistentState) → arrival reposition of the traveler-tagged sprite in `runProject`
+  (after spawn, before sceneReady gate). Door panel + input-action dropdown in
+  `InstanceInspector.tsx` (shown when the BP `classKind === "Trigger"`).
+
+**Scale sync fix (Tracer + Shadow).** A BP scaled via the **w/h "blueprint scale"**
+path sizes body+art but leaves `gameObject.scaleX = 1`. Tracer/Shadow folded only
+`obj.scaleX`, so a bed shrunk to 0.6 kept a full-size (over-reaching) tracer. FIX:
+`runProject` stamps `sprite._renderScaleX/_renderScaleY` (the w/h-derived scale);
+Tracer `_calcGeom` + Shadow fold `abs(obj.scaleX) × _renderScaleX`. ALSO: the tracer
+DETECTION samplers used raw `boxThickness` while `_calcGeom` scaled it → detection box
+had wrong thickness (offset from drawn). New `_scaledThick()` routes all samplers
+(`_sample`/`_sampleAll`/`_placementHits`/`_tilemapHitInto`/`mineBox`/tile-collect)
+through the scaled thickness. Now drawn == detected at any scale.
+
+**Scene gizmo now edits `scaleX/scaleY`** (was the hidden `w/h` override) — unifies
+with the inspector's Scale X/Y so resizing an instance no longer double-scales
+(`SceneEditor.tsx` `bpScale` resize kind, clears `w/h`).
+
+**SetVisible hides the WHOLE BP.** `sprite.manualHidden` is now composed into
+SpriteRenderer, Text, **Shadow, LightSource, Outline** visibility.
+
+**Weather shelter.** `killTags` normalizer accepts string|string[] (`_tagList`);
+`shelterTags` (fully dry) + `shelterDrizzleTags` (rain falls, splashes removed) block
+weather over tagged BPs/tiles; a painted **shelter mask** on the nav grid
+(`scene.navMesh.shelter[]`, painted in `NavMeshOverlay.tsx` — blue=1 kills both,
+red=2 kills only splashes) is baked to `peaky.shelterMask` and read per-drop in
+`Weather.ts`. Weather sprite splashes are marked `peaky.soTransient` so they're NOT
+captured for scene persistence (fixed "phantom dizzle sprites on scene entry").
+
+**Tilemap:** editor ghost preview now draws the ACTUAL selected tiles (flipped/rotated
+per `brushXf`) under the cursor in BOTH the tilemap editor and the in-scene painter;
+in-scene painter got flip/rotate TRANSFORM controls. Big-tile collision-polygon editor
++ palette got zoom. **Culling** now tests the tile IMAGE FOOTPRINT (`origin +
+displayWidth/Height`), not just the anchor — fixed big buildings popping out at the edge.
+
+**Also:** `TweenVar`/`TweenParam` (delta lerp a variable or a component param, tag =
+`tweenTag` free-text), `OnKeyHeldFor` trigger, `PlaceBigTileAtWorld`/
+`PlaceAnimatedTileAtWorld`. Collider face-culling for big-tile polygons was TRIED and
+REVERTED (opened real boundaries with partial coverage). A runtime tilemap-collider
+debug-draw was added then REMOVED per user.
+
+---
+
+## 0b. Prior session (2026-06-28) — also read + `FOLLOWUPS.md` first
+
+Big additions since the body of this doc was written. The §14 "Recent work" log
+below is older (2026-05-10); treat THIS as the current head.
+
+**Runtime persistence (NEW — `PersistentState.ts` is the hub):**
+- **Runtime-spawned objects persist.** `CreateObject` stamps a `spawnId`
+  (`Sprite.spawnId`, minted by `nextSpawnId()`), and `SaveSlot`/`LoadSlot`
+  (`eval.ts`) now RECREATE spawned objects on load instead of skipping them.
+  Scale/angle are saved too (fixes "tiny on restart" — an OnCreate scale-tween
+  was being cancelled with no restored value).
+- **Cross-LEVEL persistence.** Leaving a level (`GoToLayout` family) captures
+  spawned objects + runtime sprite objects + **tilemap edits** into
+  `PersistentState` keyed by scene id (`captureSpawnedForScene` in eval.ts);
+  `runScene` (runProject.ts, `replayCarriedSpawns()` + the tilemap-edit block
+  right after) replays them on return. `RestartLayout` deliberately does NOT
+  capture (it means "reset this level"). All of it is also folded into
+  Save/Load so it survives quitting.
+- **Runtime sprite objects** (`CreateSpriteObject`) persist too — marked
+  `peaky.soRuntime`, captured via `collectRuntimeSpriteObjects` (eval.ts).
+- **Tilemap persistence.** `TilemapRenderer.serialize()/deserialize()` (NEW)
+  diff mined/placed tiles vs an `_authoredTiles` snapshot, capture ALL BigTile +
+  animated placements, and partial-damage HP. The tilemap host is in
+  `peaky.sprites` with a stable `instanceId`, so SaveSlot/LoadSlot drive it
+  automatically; level changes route the same payload through
+  `PersistentState.tileEditsByScene`.
+
+**New tile actions/nodes:** `PlaceBigTileAtWorld`, `PlaceAnimatedTileAtWorld`
+(place-at-cursor; `eval.ts` + the usual ~8 registration spots). The Logic Sheet
+node config has a **visual BigTile/Animated picker** (reuses `BigTilePreview`)
+and the id field is a typeable expression input (name / `var:` / wire).
+`BigTile` now has a `name` (TilesetTab input); `placeBigTile`/`placeAnimatedTile`
+resolve name→id.
+
+**Editor:** `CreateSpriteObject` got a layer dropdown. Autosave is now **3 min**
++ incremental (only rewrites changed asset files — `projectFolderIO.ts`
+reference-cache) to stop the multi-second freeze on large projects.
+
+**Lighting + weather (NEW, 2026-06-29):**
+- **`LightSource.ts`** — atmospheric glow. A baked additive (`ADD` blend) glow
+  texture, NOT Phaser PointLight. `edge` = smooth/hard/noisy/wave (noisy/wave
+  clip the rim), `feather`, `flicker`, `offsetX/Y` center (draggable gizmo in
+  `BlueprintPreview` mirroring VisionMask). Renders above the ambient darkness.
+- **`Weather.ts`** — drop-in rain/snow. `space` screen/world, `mode`
+  topdown (varied-height landings) / sidescroller (die on `killTags` against
+  tagged BPs + tiles), `splash` simple (pixel crown) / sprite (one-shot anim),
+  shape line/circle/sprite, size/speed jitter, rotation, wind. Particles only
+  exist in the viewport (world mode wraps the field to the camera). Registered
+  in all 7 behavior places.
+- **`VisionMask`** now also cuts holes through **Sprite Objects** (placed sprite
+  assets), with `peaky.soLayer` stamped on placements for the cutoutLayers filter.
+- **BlobShadow was built then removed** (per user); the Weather `preset` field too.
+- `BlueprintInspector` got an **`animOf`** param hook so a `spriteAnim` field can
+  pick which sibling sprite it lists animations from (Weather splash vs shape).
+
+**Open items + audit findings to revisit** are in **`FOLLOWUPS.md`** (notably
+transient-object persistence + tilemap-placement save bloat). Diagnostic
+SceneSave/Save/Load log lines are still in `eval.ts`/`runProject.ts` to strip
+once persistence is trusted.
+
+---
+
 ## 1. What this is
 
 **Peaky Engine** is a browser-based 2D game engine. The goal is a Construct-3

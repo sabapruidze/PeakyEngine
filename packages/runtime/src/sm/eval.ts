@@ -9,7 +9,7 @@ import { showOnScreenPrint } from "../OnScreenPrint";
 import { findTracer } from "../behaviors/Tracer";
 import { getSoundManager } from "../SoundManager";
 import { isWritableBehaviorParam } from "../Behavior";
-import { persistentState, resetPersistentState, serializePersistentState, applyPersistentState } from "../PersistentState";
+import { persistentState, resetPersistentState, serializePersistentState, applyPersistentState, setSceneSpawns, setSceneTileEdits, setPendingEntry } from "../PersistentState";
 import type { Behavior } from "../Behavior";
 import { findTilemap, findTilemapAtWorld, resolveLayerId, resolveTilemapAndLayer } from "../util/tileCoords";
 import { parseHardnessMax } from "../behaviors/TilemapRenderer";
@@ -647,6 +647,41 @@ function resolveIdent(sprite: Sprite, ident: string): number | undefined {
  * filters out). Caller treats undefined as "fall back to literal parsing"
  * so old projects keep working.
  */
+/** Fire collision signals when a BP (`otherSprite`) touches a Sprite Object
+ *  placement (`go`). Emits TWO things:
+ *
+ *   1. The legacy spriteId-keyed `_placementCollide` / `_placementOverlap`
+ *      (kept so old `On{Collide,Overlap}WithSpriteObject` saves still fire).
+ *   2. The UNIFIED tag signals `OnCollide` + `OnCollide_<tag>` — the SAME names
+ *      CollisionScan emits for BP↔BP — so ONE `OnCollide`/`OnOverlap [tag]` node
+ *      fires for both BP and sprite-object contacts.
+ *
+ *  The unified signals fire only on the contact EDGE (Phaser's overlap callback
+ *  runs every contact frame; we dedup per (placement, other) pair by frame gap),
+ *  matching CollisionScan's once-per-contact semantics. Separation (`OnSeparate`)
+ *  isn't emitted here — there's no Phaser separation callback for these pairs;
+ *  it would need a per-frame scan (follow-up). */
+export function firePlacementContact(
+  otherSprite: Sprite,
+  go: Phaser.GameObjects.GameObject,
+  channel: "_placementCollide" | "_placementOverlap",
+  spriteId?: string,
+): void {
+  const d = go as unknown as { getData: (k: string) => unknown; setData: (k: string, v: unknown) => void };
+  otherSprite.events.emit(channel, { spriteId });
+  if (spriteId) otherSprite.events.emit(`${channel}:${spriteId}`, { spriteId });
+  const frame = otherSprite.scene.game.loop.frame;
+  let contacts = d.getData("peaky._soContact") as Map<number, number> | undefined;
+  if (!contacts) { contacts = new Map(); d.setData("peaky._soContact", contacts); }
+  const last = contacts.get(otherSprite.uid) ?? -10;
+  contacts.set(otherSprite.uid, frame);
+  if (frame - last > 1) {
+    const tags = (d.getData("peaky.tags") as string[] | undefined) ?? [];
+    otherSprite.events.emit("OnCollide");
+    for (const t of tags) if (t) otherSprite.events.emit(`OnCollide_${t}`);
+  }
+}
+
 /** Shared by the CreateSpriteObject action AND Game.ts's per-frame
  *  drain loop. Creates the Phaser Sprite, indexes it under
  *  peaky.placementsBySpriteId, hides from the UI cam, and queues the
@@ -761,6 +796,10 @@ export function spawnRuntimeSpriteObject(
   // Auto-play the default animation so a create-only effect still animates.
   startTimer(curAnim, !!curAnim.loop);
 
+  // Mark this as a RUNTIME-created sprite object (vs an authored placement,
+  // which runProject creates separately). The persistence capture only
+  // snapshots marked ones — authored placements are re-created by the scene.
+  go.setData("peaky.soRuntime", { spriteId, layer: layerName });
   const idx = (scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined) ?? new Map();
   const list = idx.get(spriteId) ?? [];
   list.push(go);
@@ -850,6 +889,10 @@ function parseTagList(cfg: Record<string, unknown>): string[] {
 
 export function numOr(v: unknown, fallback: number, sprite?: Sprite): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
+  // A bool toggle (Set Component Param on a `type: "bool"` field, etc.) passes
+  // true/false — map to 1/0 instead of silently falling through to the fallback
+  // (which made "set X = true" read as the default, e.g. Outline.on never on).
+  if (typeof v === "boolean") return v ? 1 : 0;
   if (typeof v === "string") {
     if (v.trim() === "") return fallback;
     // Try the expression evaluator first — covers literals, identifiers
@@ -2490,6 +2533,42 @@ function resolveTextBehavior(sprite: Sprite, name: unknown) {
  *  parallel tweens on the same tag+prop don't overwrite each other's slot. */
 let _tweenSeq = 0;
 
+/** Shared engine for TweenVar / TweenParam: lerp a scalar from `fromVal` to
+ *  `toVal` over `duration` seconds with easing, calling `writer(v)` every tick.
+ *  Real-time driven (Phaser tween on a private holder), so it's frame-rate
+ *  independent. `targetKey` identifies WHAT is being lerped (e.g.
+ *  `param:LightSource.radius` / `var:glow`) and is stored as the tween's `prop`
+ *  so TweenStop / TweenPause / TweenResume reach it by tag like any tween.
+ *
+ *  Dedup is by TARGET, not tag (mirrors the Tween action's self property-level
+ *  dedup): two tweens writing the SAME param/var would fight every tick, so a
+ *  fresh one replaces the old. DIFFERENT targets (radius vs intensity) each keep
+ *  their own tween and run together — so multiple smooth-value tweens compose. */
+function startValueTween(sprite: Sprite, cfg: Record<string, unknown>, targetKey: string, writer: (v: number) => void): void {
+  const tag = String(cfg.tweenTag ?? cfg.tag ?? "");
+  const from = numOr(cfg.fromVal, 0, sprite);
+  const to = numOr(cfg.toVal, 0, sprite);
+  const duration = Math.max(0.001, numOr(cfg.duration, 0.5, sprite)) * 1000;
+  const ease = String(cfg.ease ?? "Linear");
+  const repeat = Math.max(-1, Math.floor(numOr(cfg.repeat, 0, sprite)));
+  const yoyo = numOr(cfg.yoyo, 0, sprite) !== 0;
+  for (const [k, entry] of sprite.tweens) {
+    if (entry.prop === targetKey) { entry.tween.stop(); sprite.tweens.delete(k); }
+  }
+  const holder = { v: from };
+  writer(from);
+  const key = `${tag}|${targetKey}|#${++_tweenSeq}`;
+  const tween = sprite.scene.tweens.add({
+    targets: holder,
+    v: to,
+    duration, ease, repeat, yoyo,
+    onStart: () => sprite.events.emit(`_tweenStart:${tag}`),
+    onUpdate: () => writer(holder.v),
+    onComplete: () => { writer(to); sprite.events.emit(`_tweenFinish:${tag}`); sprite.tweens.delete(key); },
+  });
+  sprite.tweens.set(key, { tween, prop: targetKey, tag });
+}
+
 export function runAction(sprite: Sprite, a: StateAction, sourceLabel?: string): void {
   // Plural SOL fan-out — when the action's subject targets a specific
   // BP / UI Widget, dispatch the action ONCE PER picked instance (or
@@ -2606,7 +2685,9 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       break;
     }
     case "EmitSignal": {
-      const name = (cfg.name as string) ?? "";
+      // Canonical param is `signal` (matches OnSignal / EmitSignalTo); `name`
+      // is the legacy key — accept both so old saves keep working.
+      const name = String((cfg.signal ?? cfg.name ?? "") as string);
       if (name) sprite.events.emit(name);
       break;
     }
@@ -2911,6 +2992,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
     case "GoToLayout": {
       const name = String(cfg.name ?? "").trim();
       if (!name) break;
+      captureSpawnedForScene(sprite);
       drainSceneEndThen(sprite, () => emitGoToScene(sprite, name));
       break;
     }
@@ -2923,6 +3005,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const name = String(cfg.name ?? "").trim();
       if (!name) break;
       const minDisplaySec = Number(cfg.minDisplaySec ?? 0);
+      captureSpawnedForScene(sprite);
       drainSceneEndThen(sprite, () => emitGoToSceneWithLoad(sprite, name, minDisplaySec));
       break;
     }
@@ -3010,6 +3093,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       // placement (or whoever set peaky.activePlacement). Falls back to
       // asset-wide targeting when no active placement is set.
       const activeGo = sprite.scene.data.get("peaky.activePlacement") as Phaser.GameObjects.Sprite | null | undefined;
+      // Asset id for the legacy spriteId-keyed collide signal (back-compat).
+      // Empty (active-placement path) → undefined, so firePlacementContact just
+      // emits the generic + unified tag signals.
+      const soSpriteId = String(cfg.spriteId ?? "").trim() || undefined;
       let list: Phaser.GameObjects.Sprite[];
       if (activeGo) {
         list = [activeGo];
@@ -3051,11 +3138,13 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
               if (!other.gameObject || !other.gameObject.body) return;
               const goPair = other.gameObject as Phaser.Types.Physics.Arcade.GameObjectWithBody;
               sprite.scene.physics.add.collider(
-                goPair, go, undefined,
+                goPair, go,
+                () => firePlacementContact(other, go, "_placementCollide", soSpriteId),
                 () => !!go.getData("peaky.solid") && passes(other),
               );
               sprite.scene.physics.add.overlap(
-                goPair, go, undefined,
+                goPair, go,
+                () => firePlacementContact(other, go, "_placementOverlap", soSpriteId),
                 () => !go.getData("peaky.solid") && passes(other),
               );
             };
@@ -3206,7 +3295,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const cur = (sprite.scene.data.get("peaky.activeSceneName") as string | undefined) ?? sprite.scene.scene.key;
       const idx = list.indexOf(cur);
       const next = list[(idx + 1) % Math.max(1, list.length)];
-      if (next) drainSceneEndThen(sprite, () => emitGoToScene(sprite, next));
+      if (next) { captureSpawnedForScene(sprite); drainSceneEndThen(sprite, () => emitGoToScene(sprite, next)); }
       break;
     }
     case "RecreateInitialObjects":
@@ -3289,35 +3378,43 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
         console.warn("[Peaky] FireProjectile: blueprintName is empty in cfg.", cfg);
         break;
       }
-      // Spawn position = firing sprite's center by default, OR a named image
-      // point on its current frame (e.g. a "Muzzle" on the gun) when
-      // `spawnImagePoint` is set. getImagePointWorld is facing-aware, so the
-      // muzzle stays in front when the sprite faces left. When a point name is
-      // set but the CURRENT frame doesn't carry it, the shot is SUPPRESSED (no
-      // bullet) — firing from the pivot instead would put it in the wrong spot.
-      let x = sprite.gameObject.x;
-      let y = sprite.gameObject.y;
-      const spawnPt = strOr(cfg.spawnImagePoint, "", sprite).trim();
-      if (spawnPt) {
-        const sr = sprite.findBehaviorByKind("SpriteRenderer") as
-          | { getImagePointWorld?: (n: string) => { x: number; y: number } | null }
-          | undefined;
-        const wp = sr?.getImagePointWorld?.(spawnPt);
-        if (!wp) break; // point not on the current frame → don't fire
-        x = wp.x; y = wp.y;
-      }
       const facing = (sprite as unknown as { facingScaleX?: number }).facingScaleX ?? 1;
 
+      // Spawn position(s). Empty spawnImagePoint = one shot from the firing
+      // sprite's center. A single name = that image point on the current frame.
+      // COMMA-SEPARATED names = one shot per point present on the frame (points
+      // absent from the current frame are skipped individually, not suppressing
+      // the rest). getImagePointWorld is facing-aware, so a "Muzzle" stays in
+      // front when the sprite faces left.
+      const spawnPtRaw = strOr(cfg.spawnImagePoint, "", sprite).trim();
+      const firePositions: Array<{ x: number; y: number }> = [];
+      if (!spawnPtRaw) {
+        firePositions.push({ x: sprite.gameObject.x, y: sprite.gameObject.y });
+      } else {
+        const srPts = sprite.findBehaviorByKind("SpriteRenderer") as
+          | { getImagePointWorld?: (n: string) => { x: number; y: number } | null }
+          | undefined;
+        for (const n of spawnPtRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+          const wp = srPts?.getImagePointWorld?.(n);
+          if (wp) firePositions.push({ x: wp.x, y: wp.y });
+        }
+        if (firePositions.length === 0) break; // no named point on the current frame → don't fire
+      }
+
+      // Fire one projectile from (x, y). Each shot spawns its own BP and applies
+      // the action's per-shot overrides + aim independently, so a multi-point
+      // volley fans out correctly.
+      const fireOneProjectile = (x: number, y: number): void => {
       // immediate: true bypasses the spawn budget. A bullet MUST appear
       // the same frame the fire trigger runs — queueing would feel broken.
       const spawned = spawn({ name: bpName, x, y }, { immediate: true });
-      if (!spawned) break;
+      if (!spawned) return;
       const proj = spawned.findBehaviorByKind("Projectile") as
         | (Record<string, unknown> & { mode?: "straight" | "homing" | "aimed"; launch: (a: number, s?: number, t?: number) => void })
         | undefined;
       if (!proj) {
         console.warn(`[FireProjectile] BP "${bpName}" has no Projectile behavior — bullet will sit still. Attach Projectile in the BP inspector.`);
-        break;
+        return;
       }
       // Apply per-shot overrides — each ovrXxx flag, if truthy, replaces
       // the BP's Projectile field with the action's value for this shot.
@@ -3388,12 +3485,27 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           console.warn(`[FireProjectile] ${mode} bullet "${bpName}" has empty targetTags. Set targetTags on the BP's Projectile component (e.g. "player") so it knows what to aim at.`);
         }
       }
+      // Manual angle override (degrees → radians). Authored for the sprite
+      // facing RIGHT: 0 = right, 90 = down, -90 = up, ±45 / ±135 = diagonals.
+      // Wins over facing/homing/aimed — the top-down fixed-direction shot.
+      // Pair with mode "straight" so the bullet keeps this heading.
+      // Facing-aware: when the sprite is mirrored (facingScaleX < 0) the angle
+      // is reflected horizontally (Math.PI - rad) so a left-facing NPC fires
+      // the mirror image — up-right→up-left, right→left; up/down unchanged.
+      // Same convention as straight mode + image-point spawns.
+      if (numOr(cfg.ovrAngle, 0, sprite)) {
+        rad = numOr(cfg.angle, 0, sprite) * Math.PI / 180;
+        if (facing < 0) rad = Math.PI - rad;
+      }
       // Stamp the shooter so the collision-based destroyOnHit doesn't fire on
       // the sprite the bullet spawns on top of.
       (proj as Record<string, unknown>).ownerUid = sprite.uid;
       // launch() reads the (possibly-overridden) proj.speed itself, so we
       // pass undefined and let the Projectile use its own field.
       proj.launch(rad);
+      };
+
+      for (const p of firePositions) fireOneProjectile(p.x, p.y);
       break;
     }
     case "MoveToSetPosition": {
@@ -3600,6 +3712,15 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
             return {
               uid: s.uid,
               instanceId: s.instanceId,
+              // Runtime-spawned objects (placed candles, drops) have no
+              // authored placement to re-create them on load, so record what
+              // `peaky.spawn` needs to rebuild them: stable spawnId + the BP +
+              // the layer. Authored instances leave these empty (instanceId
+              // already pins them; the scene re-places them).
+              spawnId: s.spawnId || undefined,
+              bpId: s.spawnId ? s.blueprintId : undefined,
+              bpName: s.spawnId ? s.blueprintName : undefined,
+              spawnLayer: s.spawnId ? s.spawnLayerName : undefined,
               x: s.gameObject.x,
               y: s.gameObject.y,
               // body is undefined for noPhysicsBody sprites — skip velocity
@@ -3608,13 +3729,31 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
               vx: s.body?.velocity.x ?? 0,
               vy: s.body?.velocity.y ?? 0,
               facingScaleX: s.facingScaleX,
+              // Visible scale + angle. SpriteRenderer multiplies the overlay by
+              // the host gameObject's scale, so without these a recreated object
+              // whose OnCreate tweens its scale (a pop-in) loads frozen at its
+              // tiny start scale — clearRuntimeState cancels the tween and
+              // nothing restores the real value.
+              sx: s.gameObject.scaleX,
+              sy: s.gameObject.scaleY,
+              angle: s.gameObject.angle,
               vars: Object.fromEntries(s.vars),
               behaviors: behaviorStates,
             };
           }),
+          // Runtime-created sprite objects (CreateSpriteObject) in THIS scene —
+          // they live in peaky.placementsBySpriteId, not peaky.sprites, so the
+          // loop above misses them.
+          spriteObjects: collectRuntimeSpriteObjects(sprite.scene),
           // Cross-scene persistent state: permanently-removed objects + globals.
           ...serializePersistentState(),
         };
+        const spawnedN = snapshot.sprites.filter((s) => s.spawnId).length;
+        Logger.log({
+          level: "warn",
+          source: "SaveSlot",
+          message: `Save "${slot}" → ${snapshot.sprites.length} sprites, ${spawnedN} runtime-spawned (candles/drops). key=${saveKey}`,
+        });
         let ok = false;
         try {
           localStorage.setItem(saveKey, JSON.stringify(snapshot));
@@ -3708,7 +3847,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       } else if (typeof cur === "number") {
         if (typeof raw === "number") next = raw;
         else if (typeof raw === "boolean") next = raw ? 1 : 0;
-        else next = Number(raw) || 0;
+        // `numOr` resolves expressions (var:x, self.vx, "maxSpeed*2"); plain
+        // Number(raw) turned any expression string into NaN → 0, silently
+        // zeroing the param (e.g. CMSet maxSpeed = var:buffedSpeed froze it).
+        else next = numOr(raw, typeof cur === "number" ? cur : 0, sprite);
       } else {
         next = raw;
       }
@@ -3905,12 +4047,18 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           sprites?: {
             uid: number;
             instanceId?: string;
+            spawnId?: string;
+            bpId?: string;
+            bpName?: string;
+            spawnLayer?: string;
             x: number; y: number;
             vx?: number; vy?: number;
             facingScaleX?: number;
+            sx?: number; sy?: number; angle?: number;
             vars: Record<string, unknown>;
             behaviors?: Array<{ kind: string; state: Record<string, unknown> }>;
           }[];
+          spriteObjects?: Array<{ spriteId: string; layer?: string; x: number; y: number; sx?: number; sy?: number; angle?: number }>;
           // Legacy per-sprite-vars-only format (early stub).
           vars?: Record<string, unknown>;
           // Cross-scene persistent state (L5+).
@@ -3939,16 +4087,52 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
         }
         if (parsed.sprites) {
           // Match by the STABLE instanceId first (survives scene revisits +
-          // reboots, where the runtime uid counter has moved on). Fall back to
-          // uid for runtime-spawned objects that have no instanceId.
+          // reboots, where the runtime uid counter has moved on), then by
+          // spawnId for runtime-spawned objects (placed candles / drops), then
+          // by uid as a last resort.
           const byInst = new Map<string, Sprite>();
+          const bySpawn = new Map<string, Sprite>();
           const byUid = new Map<number, Sprite>();
           for (const s of list) {
             if (s.instanceId) byInst.set(s.instanceId, s);
+            if (s.spawnId) bySpawn.set(s.spawnId, s);
             byUid.set(s.uid, s);
           }
+          // Spawn callback for re-creating runtime-spawned objects that no
+          // longer exist (the scene was rebuilt from authored placements only).
+          const spawnFn = sprite.scene.data.get("peaky.spawn") as
+            | ((arg: { id?: string; name?: string; x: number; y: number; layer?: string }, opts?: { immediate?: boolean }) => Sprite | null)
+            | undefined;
+          // Track which saved spawnIds we accounted for, so any LIVE spawned
+          // object NOT in the save (spawned after this save was taken) can be
+          // removed below — the load should reproduce the saved world exactly.
+          const savedSpawnIds = new Set<string>();
+          let dbgSavedSpawned = 0, dbgRecreated = 0, dbgRecreateFailed = 0, dbgNoSpawnFn = 0;
           for (const snap of parsed.sprites) {
-            const s = (snap.instanceId ? byInst.get(snap.instanceId) : undefined) ?? byUid.get(snap.uid);
+            if (snap.spawnId) { savedSpawnIds.add(snap.spawnId); dbgSavedSpawned++; }
+            let s = (snap.instanceId ? byInst.get(snap.instanceId) : undefined)
+              ?? (snap.spawnId ? bySpawn.get(snap.spawnId) : undefined)
+              ?? byUid.get(snap.uid);
+            // Runtime-spawned object that's gone — recreate it from the BP +
+            // saved position, then restore its spawnId so a later save keeps it
+            // stable. Without this, placed candles / drops vanish on load.
+            if (!s && snap.spawnId && (snap.bpId || snap.bpName)) {
+              if (!spawnFn) { dbgNoSpawnFn++; }
+              else {
+                const created = spawnFn(
+                  { id: snap.bpId, name: snap.bpName, x: snap.x, y: snap.y, layer: snap.spawnLayer || undefined },
+                  { immediate: true },
+                );
+                if (created) {
+                  created.spawnId = snap.spawnId;
+                  created.spawnLayerName = snap.spawnLayer ?? "";
+                  s = created;
+                  dbgRecreated++;
+                } else {
+                  dbgRecreateFailed++;
+                }
+              }
+            }
             if (!s) continue;
             // Wipe in-flight state FIRST so restored data starts clean —
             // queued Waits, running tweens, edge-detected event states
@@ -3963,6 +4147,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
               s.gameObject.setPosition(snap.x, snap.y);
             }
             if (typeof snap.facingScaleX === "number") s.facingScaleX = snap.facingScaleX;
+            // Restore visible scale + angle AFTER clearRuntimeState (which
+            // cancels any in-flight OnCreate scale-tween on a recreated object).
+            if (typeof snap.sx === "number" && typeof snap.sy === "number") s.gameObject.setScale(snap.sx, snap.sy);
+            if (typeof snap.angle === "number") s.gameObject.angle = snap.angle;
             s.vars.clear();
             for (const [k, v] of Object.entries(snap.vars)) s.vars.set(k, v as never);
             // Apply per-behavior state. Match by kind — for multi-instance
@@ -3995,8 +4183,25 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
               }
             }
           }
+          // NOTE: we deliberately do NOT destroy live spawned objects that are
+          // absent from the save. They include objects spawned during THIS
+          // scene's boot (OnSceneStart → CreateObject, pooled enemies, etc.),
+          // which legitimately exist on every entry — wiping them on Load made
+          // boot-spawned enemies/objects vanish. The trade-off: an object
+          // spawned in-session AFTER the save isn't removed on Load (minor).
+          Logger.log({
+            level: "warn",
+            source: "LoadSlot",
+            message: `Load "${slot}" → ${parsed.sprites.length} saved sprites, ${dbgSavedSpawned} were spawned; recreated ${dbgRecreated}, recreate-failed ${dbgRecreateFailed}, no-spawn-callback ${dbgNoSpawnFn}. key=${saveKey}`,
+          });
         } else if (parsed.vars) {
           for (const [k, v] of Object.entries(parsed.vars)) sprite.vars.set(k, v as never);
+        }
+        // Runtime sprite objects: clear the live runtime-created ones, then
+        // rebuild from the save so the scene matches it exactly.
+        if (parsed.spriteObjects) {
+          removeRuntimeSpriteObjects(sprite.scene);
+          recreateRuntimeSpriteObjects(sprite.scene, parsed.spriteObjects);
         }
         for (const s of list) s.events.emit("_saveLoadComplete");
       } catch (e) {
@@ -4086,11 +4291,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           // short-circuits, and the sprite freezes on its last frame.
           if (anim in sr._animations) {
             if (from === "beginning") {
-              // Force restart — set anim, rewind frame, clear finished flag.
-              sr.currentAnimation = anim;
-              sr.currentFrameIdx = 0;
-              sr.finishedEmitted = false;
-              sr.restart();
+              // Force restart from frame 0 AND paint it this instant (no wait
+              // for the next SR tick) — so a signal-driven anim on another
+              // object shows on the frame it's triggered.
+              sr.playNow(anim);
               sr._lastPlayAnimRequestMs = sprite.scene.time.now;
             } else {
               // "current" — smart resume. Three cases:
@@ -4107,9 +4311,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
                 && (now - sr._lastPlayAnimRequestMs) < 100;
               sr._lastPlayAnimRequestMs = now;
               if (sr.currentAnimation !== anim) {
-                sr.currentAnimation = anim;
+                // Different anim → switch AND paint now (no next-tick wait).
+                sr.playNow(anim);
               } else if (sr.finishedEmitted && !continuous) {
-                sr.restart();
+                sr.playNow(anim);
               }
             }
           } else {
@@ -5012,10 +5217,24 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
         const all = (sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
         for (const s of all) if (!s.destroyed && s.tags.has(wantTag)) bpTargetSprites.push(s);
         if (bpTargetSprites.length === 0) break;
-      } else if (bpTargetSprites.length > 0) {
-        // BP-flavored target list — resolve overlays per BP for alpha,
-        // else use the gameObject directly. Multiple BPs tween in parallel
-        // off a single Phaser tween instance.
+      } else if (phaserProp === "alpha") {
+        const sr = sprite.findBehaviorByKind("SpriteRenderer");
+        const srOverlay = (sr as unknown as { overlay?: Phaser.GameObjects.Image })?.overlay;
+        if (srOverlay) tweenTargets.push(srOverlay);
+        const text = sprite.findBehaviorByKind("Text");
+        const textOverlay = (text as unknown as { overlay?: Phaser.GameObjects.Text })?.overlay;
+        if (textOverlay) tweenTargets.push(textOverlay);
+        // Fall back to the gameObject for sprites with no overlay (pure
+        // physics body or rect-fill). Their host IS the visual.
+        if (tweenTargets.length === 0) tweenTargets.push(sprite.gameObject);
+      } else {
+        tweenTargets.push(sprite.gameObject);
+      }
+      // bp / bpTag fill bpTargetSprites above; resolve their overlays here.
+      // This ran as a dead `else if` inside the chain before — once "bp"/
+      // "bpTag" matched, it was unreachable and tweenTargets stayed empty,
+      // so "Tween every BP by name/tag" animated nothing.
+      if (bpTargetSprites.length > 0) {
         for (const s of bpTargetSprites) {
           if (phaserProp === "alpha") {
             const sr = s.findBehaviorByKind("SpriteRenderer");
@@ -5029,18 +5248,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
             tweenTargets.push(s.gameObject);
           }
         }
-      } else if (phaserProp === "alpha") {
-        const sr = sprite.findBehaviorByKind("SpriteRenderer");
-        const srOverlay = (sr as unknown as { overlay?: Phaser.GameObjects.Image })?.overlay;
-        if (srOverlay) tweenTargets.push(srOverlay);
-        const text = sprite.findBehaviorByKind("Text");
-        const textOverlay = (text as unknown as { overlay?: Phaser.GameObjects.Text })?.overlay;
-        if (textOverlay) tweenTargets.push(textOverlay);
-        // Fall back to the gameObject for sprites with no overlay (pure
-        // physics body or rect-fill). Their host IS the visual.
-        if (tweenTargets.length === 0) tweenTargets.push(sprite.gameObject);
-      } else {
-        tweenTargets.push(sprite.gameObject);
       }
       const tag = String(cfg.tag ?? "");
       const to = numOr(cfg.to, 0, sprite);
@@ -5104,6 +5311,37 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
         },
       });
       sprite.tweens.set(tweenKey, { tween, prop: phaserProp, tag });
+      break;
+    }
+    case "TweenVar": {
+      const t = resolveWriteTarget(sprite, String(cfg.varName ?? ""));
+      if (!t) break;
+      // Key by the authored path (e.g. "Player.HP") so tweens on different
+      // objects' same-named vars don't dedup each other.
+      startValueTween(sprite, cfg, `var:${String(cfg.varName ?? "")}`, (v) => t.sprite.writeVar(t.field, v));
+      break;
+    }
+    case "TweenParam": {
+      const kind = String(cfg.behavior ?? "").trim();
+      const param = String(cfg.param ?? "").trim();
+      if (!kind || !param) break;
+      const compName = String(cfg.componentName ?? "").trim();
+      const behavior = compName
+        ? sprite.findBehaviorsByKind(kind as never).find((b) => String((b as unknown as { name?: string }).name ?? "") === compName)
+        : sprite.findBehaviorByKind(kind);
+      if (!behavior) break;
+      if (!isWritableBehaviorParam(kind, param)) {
+        Logger.log({
+          level: "warn",
+          source: "TweenParam",
+          message: `"${kind}.${param}" is not a writable param — check the component's parameter list.`,
+        });
+        break;
+      }
+      const rec = behavior as unknown as Record<string, unknown>;
+      // Key by component+name+param so radius and intensity (or two named
+      // LightSources) tween independently; same target replaces.
+      startValueTween(sprite, cfg, `param:${kind}.${compName}.${param}`, (v) => { rec[param] = v; });
       break;
     }
     case "TweenSetEndValue": {
@@ -5546,7 +5784,22 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
     }
     case "SetOpacity": {
       const a = Math.max(0, Math.min(1, numOr(cfg.alpha, 1, sprite)));
+      // Fade the WHOLE BP: the host body AND the sprite/text overlays. The
+      // overlays multiply their per-tick alpha by `manualAlpha` (they ignore
+      // the host's alpha), so without this SetOpacity did nothing on a
+      // sprite-rendered BP — only dimming the invisible host rect.
+      sprite.manualAlpha = a;
       sprite.gameObject.setAlpha(a);
+      break;
+    }
+    case "SetVisible": {
+      // Whole-BP show/hide — host body + every routed overlay (SR image, Text,
+      // particles…). `mode=set` uses `visible`; `mode=toggle` flips current.
+      const mode = String(cfg.mode ?? "set");
+      const hidden = mode === "toggle"
+        ? !sprite.manualHidden
+        : numOr(cfg.visible, 1, sprite) === 0;
+      sprite.setManualHidden(hidden);
       break;
     }
     case "MoveToLayer": {
@@ -5625,6 +5878,29 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       sprite.scene.input.setDefaultCursor("default");
       const canvas = sprite.scene.game.canvas as HTMLCanvasElement | undefined;
       if (canvas) canvas.style.cursor = "default";
+      break;
+    }
+    case "SetAmbientLight": {
+      // Screen-space dark overlay at depth 900000 — BELOW LightSource glows
+      // (900001), ABOVE the world, UNDER the UI cam. LightSource PointLights add
+      // brightness on top, revealing lit pools. amount 0 = day, 1 = night.
+      const amount = Math.max(0, Math.min(1, numOr(cfg.amount, 0.7, sprite)));
+      const color = Math.floor(numOr(cfg.color, 0x0a0a1a, sprite)) & 0xffffff;
+      const scene = sprite.scene;
+      const cam = scene.cameras.main;
+      let dark = scene.data.get("peaky.darkness") as Phaser.GameObjects.Rectangle | undefined;
+      if (!dark) {
+        // 2× viewport, screen-fixed + centred, so camera movement never reveals an edge.
+        dark = scene.add.rectangle(cam.width / 2, cam.height / 2, cam.width * 2, cam.height * 2, color, amount);
+        dark.setScrollFactor(0);
+        dark.setOrigin(0.5);
+        dark.setDepth(900_000);
+        const uiCam = scene.data.get("peaky.uiCam") as Phaser.Cameras.Scene2D.Camera | undefined;
+        if (uiCam) uiCam.ignore(dark);
+        scene.data.set("peaky.darkness", dark);
+      }
+      dark.setFillStyle(color, amount);
+      dark.setVisible(amount > 0);
       break;
     }
     case "BlurScene": {
@@ -5795,6 +6071,48 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const bigTileId = strOr(cfg.bigTileId, "", sprite);
       if (!bigTileId) break;
       tm.placeBigTile(layerId, bigTileId, Math.floor(numOr(cfg.c, 0, sprite)), Math.floor(numOr(cfg.r, 0, sprite)));
+      break;
+    }
+    case "PlaceBigTileAtWorld": {
+      const src = sourceLabel ?? "PlaceBigTileAtWorld";
+      const tmName = strOr(cfg.tilemap, "", sprite);
+      const layerName = strOr(cfg.layer, "", sprite);
+      const wx = numOr(cfg.x, 0, sprite);
+      const wy = numOr(cfg.y, 0, sprite);
+      const bigTileId = strOr(cfg.bigTileId, "", sprite);
+      if (!bigTileId) { Logger.log({ level: "warn", source: src, message: "no BigTile selected (bigTileId is empty) — nothing placed." }); break; }
+      const tm = findTilemapAtWorld(sprite.scene, tmName, wx, wy) ?? findTilemap(sprite.scene, tmName);
+      if (!tm) {
+        const known = Array.from(((sprite.scene.data.get("peaky.tilemapsByName") as Map<string, unknown> | undefined) ?? new Map()).keys());
+        Logger.log({ level: "warn", source: src, message: `tilemap "${tmName}" not found. Registered: [${known.join(", ")}]` });
+        break;
+      }
+      const layerId = resolveLayerId(tm, layerName);
+      if (!layerId) { Logger.log({ level: "warn", source: src, message: `layer "${layerName}" not on tilemap "${tmName}".` }); break; }
+      const cell = tm.worldToCell(wx, wy);
+      if (!cell) { Logger.log({ level: "warn", source: src, message: `world (${wx}, ${wy}) is outside tilemap "${tmName}".` }); break; }
+      tm.placeBigTile(layerId, bigTileId, cell.c, cell.r);
+      break;
+    }
+    case "PlaceAnimatedTileAtWorld": {
+      const src = sourceLabel ?? "PlaceAnimatedTileAtWorld";
+      const tmName = strOr(cfg.tilemap, "", sprite);
+      const layerName = strOr(cfg.layer, "", sprite);
+      const wx = numOr(cfg.x, 0, sprite);
+      const wy = numOr(cfg.y, 0, sprite);
+      const animatedTileId = strOr(cfg.animatedTileId, "", sprite);
+      if (!animatedTileId) { Logger.log({ level: "warn", source: src, message: "no Animated Tile selected (animatedTileId is empty) — nothing placed." }); break; }
+      const tm = findTilemapAtWorld(sprite.scene, tmName, wx, wy) ?? findTilemap(sprite.scene, tmName);
+      if (!tm) {
+        const known = Array.from(((sprite.scene.data.get("peaky.tilemapsByName") as Map<string, unknown> | undefined) ?? new Map()).keys());
+        Logger.log({ level: "warn", source: src, message: `tilemap "${tmName}" not found. Registered: [${known.join(", ")}]` });
+        break;
+      }
+      const layerId = resolveLayerId(tm, layerName);
+      if (!layerId) { Logger.log({ level: "warn", source: src, message: `layer "${layerName}" not on tilemap "${tmName}".` }); break; }
+      const cell = tm.worldToCell(wx, wy);
+      if (!cell) { Logger.log({ level: "warn", source: src, message: `world (${wx}, ${wy}) is outside tilemap "${tmName}".` }); break; }
+      tm.placeAnimatedTile(layerId, animatedTileId, cell.c, cell.r);
       break;
     }
     case "RemoveBigTileAt": {
@@ -6179,6 +6497,103 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
  * scenes. Instead the editor wraps the runtime, so we let it handle
  * the transition by destroying + re-running with a different scene.
  */
+/**
+ * Snapshot the CURRENT scene's runtime-spawned objects (placed candles, drops)
+ * into PersistentState before a LEVEL CHANGE tears the game down, so they're
+ * replayed by runScene when the player returns to this level. Captures bp +
+ * position + facing + vars + behavior state — same data SaveSlot records.
+ *
+ * Only called on GoToLayout / GoToNextLayout (leaving a level). NOT on
+ * RestartLayout / RecreateInitialObjects — those mean "reset this level", where
+ * spawned objects should start fresh, not carry over.
+ */
+function captureSpawnedForScene(sprite: Sprite): void {
+  const sceneId = sprite.scene.data.get("peaky.sceneId") as string | undefined;
+  if (!sceneId) return;
+  const list = (sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+  const records: unknown[] = [];
+  for (const s of list) {
+    if (!s.spawnId || s.destroyed) continue;
+    const behaviorStates: Array<{ kind: string; state: Record<string, unknown> }> = [];
+    for (const b of s.getBehaviors()) {
+      const state = b.serialize();
+      if (state) behaviorStates.push({ kind: b.kind, state });
+    }
+    records.push({
+      k: "bp",
+      spawnId: s.spawnId,
+      bpId: s.blueprintId,
+      bpName: s.blueprintName,
+      layer: s.spawnLayerName,
+      x: s.gameObject.x,
+      y: s.gameObject.y,
+      facingScaleX: s.facingScaleX,
+      sx: s.gameObject.scaleX,
+      sy: s.gameObject.scaleY,
+      angle: s.gameObject.angle,
+      vars: Object.fromEntries(s.vars),
+      behaviors: behaviorStates,
+    });
+  }
+  for (const so of collectRuntimeSpriteObjects(sprite.scene)) records.push(so);
+  setSceneSpawns(sceneId, records);
+  // Tilemap edits (mined / placed tiles) per tilemap host, keyed by its stable
+  // instanceId so the right map gets them back on return.
+  const tileEdits: Record<string, unknown> = {};
+  for (const s of list) {
+    if (!s.instanceId) continue;
+    const tm = s.findBehaviorByKind("TilemapRenderer");
+    if (!tm) continue;
+    const st = tm.serialize();
+    if (st) tileEdits[s.instanceId] = st;
+  }
+  setSceneTileEdits(sceneId, tileEdits);
+  Logger.log({ level: "warn", source: "SceneSave", message: `Captured ${records.length} runtime objects + ${Object.keys(tileEdits).length} tilemap edit sets leaving scene id="${sceneId}".` });
+}
+
+/** Snapshot the RUNTIME-created sprite objects (CreateSpriteObject) in a scene.
+ *  Authored placements aren't marked, so they're skipped — the scene re-creates
+ *  those itself. Shape mirrors a BP record (`k:"so"`) so both ride the same
+ *  per-scene + save/load persistence path. */
+export function collectRuntimeSpriteObjects(scene: Phaser.Scene): Array<{ k: "so"; spriteId: string; layer: string; x: number; y: number; sx: number; sy: number; angle: number }> {
+  const idx = scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+  if (!idx) return [];
+  const out: Array<{ k: "so"; spriteId: string; layer: string; x: number; y: number; sx: number; sy: number; angle: number }> = [];
+  for (const [spriteId, glist] of idx) {
+    for (const go of glist) {
+      const meta = go.getData("peaky.soRuntime") as { layer?: string } | undefined;
+      // Skip TRANSIENT one-shots (weather splashes, FX) — capturing them makes
+      // them reappear as static, wrong-animation sprites on scene return.
+      if (!meta || go.active === false || go.getData("peaky.soTransient")) continue;
+      out.push({ k: "so", spriteId, layer: meta.layer ?? "", x: go.x, y: go.y, sx: go.scaleX, sy: go.scaleY, angle: go.angle });
+    }
+  }
+  return out;
+}
+
+/** Destroy all runtime-created sprite objects in a scene (used before a
+ *  save-load restore so the scene matches the save exactly). */
+export function removeRuntimeSpriteObjects(scene: Phaser.Scene): void {
+  const idx = scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+  if (!idx) return;
+  for (const glist of idx.values()) {
+    for (let i = glist.length - 1; i >= 0; i--) {
+      const go = glist[i];
+      if (go.getData("peaky.soRuntime")) { go.destroy(); glist.splice(i, 1); }
+    }
+  }
+}
+
+/** Re-create runtime sprite objects from saved records. */
+export function recreateRuntimeSpriteObjects(scene: Phaser.Scene, recs: Array<{ spriteId: string; layer?: string; x: number; y: number; sx?: number; sy?: number; angle?: number }>): void {
+  for (const rec of recs) {
+    const go = spawnRuntimeSpriteObject(scene, rec.spriteId, rec.x, rec.y, rec.layer ?? "");
+    if (!go) continue;
+    if (typeof rec.sx === "number" && typeof rec.sy === "number") go.setScale(rec.sx, rec.sy);
+    if (typeof rec.angle === "number") go.angle = rec.angle;
+  }
+}
+
 function emitGoToScene(sprite: Sprite, name: string): void {
   const canvas = sprite.scene.game.canvas as HTMLCanvasElement | undefined;
   const target = canvas?.parentElement ?? canvas;
@@ -6207,6 +6622,116 @@ function emitGoToSceneWithLoad(sprite: Sprite, name: string, minDisplaySec: numb
     }));
   } else {
     try { sprite.scene.scene.start(name); } catch (e) { console.warn("[Peaky] GoToLayoutWithLoad fallback failed:", e); }
+  }
+}
+
+/** Runtime door hand-off carried on a spawned Trigger sprite (stamped by
+ *  runProject from the instance's `door` config, with the scene NAME resolved). */
+export interface DoorLinkRuntime {
+  name?: string;
+  destSceneId?: string;
+  destSceneName?: string;
+  destDoor?: string;
+  withLoad?: boolean;
+  loaderSceneName?: string;
+  travelerTag?: string;
+  activation?: "instant" | "delay" | "input";
+  delaySec?: number;
+  inputAction?: string;
+}
+
+/** Per-frame DOOR scan — runs right after CollisionScan (which fills each
+ *  sprite's `_justCollidedThisTick` ENTER-edge set). For every door sprite (a
+ *  Trigger instance whose `doorLink.destSceneName` is set), if a traveler-tagged
+ *  sprite ENTERED it this tick, stash the arrival point and start the transition.
+ *  Using the ENTER edge (not continuous overlap) means arriving already-standing
+ *  on the destination door does NOT bounce the player straight back. */
+export function runDoorScan(sprites: Sprite[]): void {
+  for (const s of sprites) {
+    if (!s || s.destroyed) continue;
+    const ds = s as unknown as { doorLink?: DoorLinkRuntime; _doorArmed?: boolean; _doorEnteredAt?: number; _doorInputReady?: boolean };
+    const door = ds.doorLink;
+    if (!door || !door.destSceneName) continue;
+    // A transition already began this frame — don't start a second.
+    if (s.scene?.data?.get("peaky.sceneEnding")) return;
+    const travelerTag = (door.travelerTag && door.travelerTag.trim()) || "player";
+    const findTraveler = (set: Set<Sprite>): Sprite | null => {
+      for (const o of set) if (o && !o.destroyed && o.tags.has(travelerTag)) return o;
+      return null;
+    };
+    const overlapping = findTraveler(s._currOverlap);
+    const activation = door.activation || "instant";
+    let traveler: Sprite | null = null;
+
+    if (activation === "input") {
+      // Key-press mode: NO leave/re-enter requirement — stand on the door, press
+      // the key each time (press → travel → arrive → press → travel back). We
+      // only skip the ARRIVAL frame, because a key still held across a scene
+      // rebuild reports `justPressed` on the fresh InputActions' first frame
+      // (spurious edge) which would otherwise bounce. Edge-based justPressed
+      // means each real tap fires exactly once.
+      if (!overlapping) { ds._doorInputReady = false; continue; }
+      if (!ds._doorInputReady) { ds._doorInputReady = true; continue; } // eat the arrival frame
+      const ia = getInputActions(s.scene);
+      const act = (door.inputAction && door.inputAction.trim()) || "";
+      if (!ia || !act || !ia.justPressed(act)) continue;
+      traveler = overlapping;
+    } else {
+      // instant / delay → a door ARMS only once no traveler overlaps it, so
+      // arriving ON a door (or spawning on one) doesn't auto-fire back (the
+      // flip-flop). It fires on the NEXT real entry.
+      if (!ds._doorArmed) {
+        if (!overlapping) ds._doorArmed = true;
+        ds._doorEnteredAt = undefined;
+        continue;
+      }
+      if (activation === "delay") {
+        if (!overlapping) { ds._doorEnteredAt = undefined; continue; } // stepped off → reset timer
+        const now = s.scene.time.now / 1000;
+        if (ds._doorEnteredAt === undefined) { ds._doorEnteredAt = now; continue; } // start the wait
+        if (now - ds._doorEnteredAt < Math.max(0, Number(door.delaySec ?? 0))) continue; // still waiting
+        traveler = overlapping;
+      } else {
+        // "instant" → fire on the ENTER edge (a traveler that started overlapping THIS tick).
+        for (const o of s._justCollidedThisTick) {
+          if (o && !o.destroyed && o.tags.has(travelerTag)) { traveler = o; break; }
+        }
+      }
+    }
+    if (!traveler) continue;
+    // Same-scene link → teleport in place, NO reload. Move the traveler onto the
+    // named destination door and disarm it (arriving on it isn't an entry).
+    const curSceneId = s.scene?.data?.get("peaky.sceneId") as string | undefined;
+    if (door.destSceneId && door.destSceneId === curSceneId) {
+      let dest: Sprite | null = null;
+      for (const o of sprites) {
+        const dl = (o as unknown as { doorLink?: DoorLinkRuntime }).doorLink;
+        if (dl && dl.name && dl.name === door.destDoor) { dest = o; break; }
+      }
+      if (dest?.gameObject) {
+        const b = (traveler.gameObject as { body?: { reset?: (x: number, y: number) => void } }).body;
+        if (b?.reset) b.reset(dest.gameObject.x, dest.gameObject.y);
+        else traveler.gameObject.setPosition(dest.gameObject.x, dest.gameObject.y);
+        // Reset the destination door's gates so arriving on it doesn't auto-fire
+        // (instant/delay: disarm until stepped off; input: eat the arrival frame).
+        const dd = dest as unknown as { _doorArmed?: boolean; _doorInputReady?: boolean };
+        dd._doorArmed = false;
+        dd._doorInputReady = false;
+      } else {
+        Logger.log({ level: "warn", source: "Door", message: `Same-scene door target "${door.destDoor}" not found — nothing to teleport to.` });
+      }
+      return; // never transition for a same-scene door
+    }
+    setPendingEntry({ destSceneId: door.destSceneId ?? "", destDoor: door.destDoor ?? "", travelerTag });
+    const name = door.destSceneName;
+    captureSpawnedForScene(s);
+    if (door.withLoad) {
+      // Per-door loading screen: stash the override ScenePanel reads (same key
+      // SetLoadingScene uses). Empty → the project's default loadingSceneId.
+      if (door.loaderSceneName) s.scene.data.set("peaky.loadingSceneOverride", door.loaderSceneName);
+      drainSceneEndThen(s, () => emitGoToSceneWithLoad(s, name, 0));
+    } else drainSceneEndThen(s, () => emitGoToScene(s, name));
+    return; // one transition per frame
   }
 }
 

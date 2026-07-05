@@ -2170,7 +2170,10 @@ export function ContentBrowser() {
       {/* ─ Asset grid ─ */}
       <div
         style={{
-          flex: 1, overflowY: "auto", padding: "8px", position: "relative",
+          // minWidth:0 lets this flex pane shrink below its content so the
+          // inner flexWrap grid actually wraps into rows. Without it the pane
+          // grows to one long row and scrolls horizontally instead.
+          flex: 1, minWidth: 0, overflowY: "auto", padding: "8px", position: "relative",
           outline: fileDragOver ? "2px dashed var(--green)" : "none",
           outlineOffset: -4,
           background: fileDragOver ? "rgba(90,200,120,0.06)" : undefined,

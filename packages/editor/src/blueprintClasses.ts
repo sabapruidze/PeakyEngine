@@ -10,7 +10,7 @@ import { BehaviorInstance, BlueprintDef, PeakyEvent, VariableDef } from "./proje
  * behaviors. The "+ New Blueprint" picker reads from `PUBLIC_CLASSES`.
  */
 
-export type BpClass = "Character" | "NPC" | "Actor" | "Camera" | "Empty";
+export type BpClass = "Character" | "NPC" | "Actor" | "Camera" | "Empty" | "Trigger";
 
 export interface BpClassMeta {
   label: string;
@@ -32,6 +32,9 @@ export interface BpClassDefaults {
    *  for classes that don't have a movement behavior managing their own
    *  physics — without this, a blank BP falls off-screen at 800px/sec². */
   affectedByGravity?: boolean;
+  /** When true the host rectangle never renders (editor + runtime) — the BP is
+   *  an invisible volume (e.g. a Trigger). The collider still works. */
+  hideRect?: boolean;
 }
 
 export const CLASSES: Record<BpClass, BpClassMeta> = {
@@ -797,10 +800,45 @@ export const CLASSES: Record<BpClass, BpClassMeta> = {
       affectedByGravity: false,
     }),
   },
+  Trigger: {
+    label: "Trigger",
+    description: "Invisible sensor volume. Drop it into a scene, size it, and wire OnOverlap / On End Overlap / On Overlap For Seconds in the Logic Sheet. Set its Door link (in the instance inspector) to also teleport the player to another scene. No gravity, hidden rectangle, overlap-only (never blocks movement).",
+    defaults: () => ({
+      classKind: "Trigger",
+      tags: ["trigger"],
+      w: 64,
+      h: 64,
+      // Distinct blue so trigger BPs read differently in lists / the editor
+      // wireframe (the rect itself is hidden; the ● Colliders overlay shows it).
+      color: 0x33bbff,
+      hideRect: true,
+      affectedByGravity: false,
+      behaviors: [
+        // Overlap-only sensor: fires OnCollide/OnOverlap/OnSeparate via
+        // CollisionScan but never physically pushes anything.
+        {
+          kind: "Collider",
+          config: { width: 64, height: 64, offsetX: 0, offsetY: 0, collideWorldBounds: 0, passThrough: 1, debugDraw: 0 },
+          enabled: true,
+        },
+        // Placeholder State Machine keeps the Overview/animation surface
+        // available and consistent with the Empty class (disabled → never wins).
+        {
+          kind: "StateMachine",
+          config: {
+            states: [
+              { name: "empty", priority: 0, enabled: 0, animation: "", useEnter: false, useExit: false, loop: false, primary: { kind: "Always" } },
+            ],
+          },
+          enabled: true,
+        },
+      ],
+    }),
+  },
 };
 
 /** Classes shown to the user in the "+ New Blueprint" picker. */
-export const PUBLIC_CLASSES: BpClass[] = ["Character", "NPC", "Empty", "Camera"];
+export const PUBLIC_CLASSES: BpClass[] = ["Character", "NPC", "Trigger", "Empty", "Camera"];
 
 /** Build a partial BlueprintDef from class defaults, suitable for `addBlueprint(partial)`. */
 export function buildClassPartial(cls: BpClass): Partial<BlueprintDef> {
@@ -815,5 +853,6 @@ export function buildClassPartial(cls: BpClass): Partial<BlueprintDef> {
     variables: d.variables,
     events: d.events,
     affectedByGravity: d.affectedByGravity,
+    hideRect: d.hideRect,
   };
 }

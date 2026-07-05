@@ -26,6 +26,10 @@ import {
   SpriteRenderer,
   ParticleEmitter,
   SquashStretch,
+  Outline,
+  Shadow,
+  LightSource,
+  Weather,
   Text,
   Tracer,
   UIWidgetRenderer,
@@ -45,7 +49,13 @@ import {
   SoundManager,
   SOUND_KEY,
   persistentState,
+  takePendingEntry,
+  setPendingEntry,
+  nextSpawnId,
+  getSceneSpawns,
+  getSceneTileEdits,
   spawnRuntimeSpriteObject,
+  firePlacementContact,
   Logger,
   buildNavGrid,
 } from "@peaky/runtime";
@@ -55,6 +65,8 @@ import type {
   EventGroupSpec,
   SpriteAnimRuntime,
   LogicSheet as RuntimeLogicSheet,
+  Builder,
+  PreloadHook,
 } from "@peaky/runtime";
 import type {
   BehaviorInstance,
@@ -193,6 +205,10 @@ const BEHAVIOR_REGISTRY = {
   Camera,
   Tracer,
   SquashStretch,
+  Outline,
+  Shadow,
+  LightSource,
+  Weather,
   UIWidgetRenderer,
   ParticleEmitter,
   Damageable,
@@ -527,34 +543,16 @@ function buildSpriteRendererConfig(
  * `_collide:<tag>`) on the sprite's EventBus; the per-event runner on
  * Sprite peeks those when matching `OnOverlap` / `OnCollide` triggers.
  */
-export async function runScene(project: PeakyProject, scene: SceneData, parent: HTMLElement): Promise<Peaky> {
-  // Fold in shared global-layer content so the rest of this function treats the
-  // merged result as the scene to build (layers + instances + UI instances).
+/** Build the `{ build, preload }` for one scene. Shared by the initial boot
+ *  (`runScene` → fresh game) and in-place transitions (`buildSceneOn` → restart
+ *  on the existing game — textures kept, fast). `parent` is the DOM container the
+ *  builder dispatches `peaky:sceneReady` on. Returns the effective (global-layer-
+ *  merged) scene so the boot path can size the Peaky from it. */
+async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent: HTMLElement): Promise<{ build: Builder; preload: PreloadHook; effectiveScene: SceneData }> {
+  // Fold in shared global-layer content so the builder treats the merged result
+  // as the scene to build (layers + instances + UI instances).
   scene = buildEffectiveScene(project, scene);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const game: Peaky = new Peaky({
-    // Canvas size = project viewport (the game window players see).
-    width: project.viewportWidth,
-    height: project.viewportHeight,
-    // Camera + physics bounds = scene layout (the world the camera scrolls).
-    layoutWidth: scene.width,
-    layoutHeight: scene.height,
-    // When the scene is flagged unboundedScroll, skip the camera bounds
-    // entirely so it can drift past layout edges. Physics bounds stay
-    // either way (bodies still constrained to the layout).
-    boundedCamera: !scene.unboundedScroll,
-    backgroundColor: scene.backgroundColor,
-    gravity: scene.gravity,
-    parent,
-    inputActions: project.inputActions.map((a) => ({ name: a.name, keys: a.keys })),
-    sampling: project.sampling ?? "bilinear",
-  });
-  // Expose the active Peaky instance globally so the editor's TopBar can
-  // poll `getActualFps()` for the live FPS counter. Also handy for F12
-  // debugging — `__peakyGame.getScene()` gets you into Phaser.
-  (window as unknown as { __peakyGame?: Peaky }).__peakyGame = game;
-
-  game.start((g) => {
+  const build: Builder = (g) => {
     // Audio — create the SoundManager early (before any sprite spawns, so an
     // OnCreate → PlaySound fires correctly) and register it on scene.data
     // for the PlayMusic / PlaySound action handlers to find. Audio data is
@@ -590,6 +588,12 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
         if (scene.navMesh && scene.navMesh.walkable.length > 0) {
           layerScene.data.set("peaky.navGrid", buildNavGrid(scene.navMesh));
           if (scene.navMesh.debug) layerScene.data.set("peaky.navDebug", true);
+        }
+        // Painted shelter mask → weather reads it (O(1) cell lookup). Independent
+        // of the nav grid — a scene can have shelter with no walkable paint.
+        if (scene.navMesh?.shelter && scene.navMesh.shelter.some((v) => v)) {
+          const nm = scene.navMesh;
+          layerScene.data.set("peaky.shelterMask", { cols: nm.cols, rows: nm.rows, cellSize: nm.cellSize, cells: nm.shelter });
         }
       }
     }
@@ -904,6 +908,7 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
     ): void => {
       const bp = findBlueprint(project, sprite.blueprintId ?? "");
       sprite._pooled = false;
+      sprite._destroying = false;
       // Reactivate gameObject + body, and restore the overlays hidden at pool
       // time (mirror of deactivateToPool's setCullHidden(true)).
       sprite.gameObject.setActive(true);
@@ -931,6 +936,11 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // Reset per-event state so OnCreate/OnceWhileTrue/etc. fire again.
       // Reuses the same routine destroy() calls for runtime-state wipe.
       sprite.clearRuntimeState();
+      // Behavior-internal runtime state (CharacterMovement jump/dash counters,
+      // CharacterAnimator active state, …) — clearRuntimeState doesn't touch
+      // these, so without resetForPool a reused enemy respawns mid-dash or
+      // stuck in its death state.
+      sprite.resetBehaviorsForPool();
       // Reset Damageable hp (most common state).
       const dmg = sprite.findBehaviorByKind("Damageable") as
         | { hp: number; maxHp: number; isDead?: boolean; iframesUntilSec?: number; hitstunUntilSec?: number }
@@ -1060,6 +1070,12 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       }).at(x, y);
       sprite.blueprintName = bp.name;
       sprite.blueprintId = bp.id;
+      // The w/h-derived "blueprint scale" (e.g. a bed shrunk to 0.6) sizes the
+      // body + art but does NOT touch gameObject.scaleX. Stamp it so overlays
+      // that fold host scale (Tracer reach, Shadow size) see the REAL effective
+      // scale (this × gameObject.scaleX), not just the runtime setScale part.
+      sprite._renderScaleX = scaleX;
+      sprite._renderScaleY = scaleY;
       // instanceName isn't a parameter on spawnFromBlueprint — set it
       // from the caller (the scene-instance loop below). For runtime
       // CreateObject spawns we leave it empty; those don't have a
@@ -1776,6 +1792,24 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
         if (sx !== 1 || sy !== 1) sprite.gameObject.setScale(sx, sy);
         if (inst.angle) sprite.gameObject.setAngle(inst.angle);
       }
+      // Door link — stamp it onto the sprite (resolving the destination scene
+      // NAME, which the transition APIs take) so the runtime door scan can fire
+      // the scene link when a traveler enters. Only doors (destSceneId set) act.
+      if (sprite && inst.door && inst.door.destSceneId) {
+        const destName = project.scenes.find((s) => s.id === inst.door!.destSceneId)?.name ?? "";
+        (sprite as unknown as { doorLink?: unknown }).doorLink = {
+          name: inst.door.name,
+          destSceneId: inst.door.destSceneId,
+          destSceneName: destName,
+          destDoor: inst.door.destDoor,
+          withLoad: !!inst.door.withLoad,
+          loaderSceneName: inst.door.loaderSceneId ? (project.scenes.find((s) => s.id === inst.door!.loaderSceneId)?.name ?? "") : "",
+          travelerTag: inst.door.travelerTag,
+          activation: inst.door.activation,
+          delaySec: inst.door.delaySec,
+          inputAction: inst.door.inputAction,
+        };
+      }
       // Spawned-tag list mirrors the runtime sprite.tags exactly — used by
       // wireCollisionsFor() to set up pair listeners. Honor the per-instance
       // override (when the BP allows it) so tag-based collision routing
@@ -2116,6 +2150,55 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // Expose wireCollisionsFor for the runtime wake check
       // (Sprite._runWakeCheck calls it lazily for distance-gated BPs).
       sceneForRegistry.data.set("peaky.wireCollisionsFor", wireCollisionsFor);
+
+      // Door arrival — if we reached this scene through a Door, move the traveler
+      // (tagged sprite, default "player") onto the destination door's authored
+      // position. Consumes the one-shot pending entry so a later reload doesn't
+      // re-teleport. Runs under the loader cover, so the placement isn't seen.
+      {
+        const pendingEntry = takePendingEntry();
+        // With a loader, the LOADER scene builds BEFORE the destination — it must
+        // NOT consume the entry. Only consume it when THIS scene is the target;
+        // otherwise put it back so the real destination's build repositions.
+        if (pendingEntry && pendingEntry.destSceneId !== scene.id) setPendingEntry(pendingEntry);
+        if (pendingEntry && pendingEntry.destSceneId === scene.id) {
+          const destInst = scene.instances.find((i) => !!i.door?.name && i.door.name === pendingEntry.destDoor);
+          const tag = (pendingEntry.travelerTag && pendingEntry.travelerTag.trim()) || "player";
+          const list = (sceneForRegistry.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+          const traveler = list.find((s) => !s.destroyed && s.tags.has(tag));
+          Logger.log({ level: "log", source: "DoorArrival", message: `scene="${scene.name}"(${scene.id}) destDoor="${pendingEntry.destDoor}" → door ${destInst ? `found @(${destInst.x},${destInst.y})` : "NOT FOUND"}, traveler[${tag}] ${traveler ? "found" : "NOT FOUND"}` });
+          if (destInst && traveler?.gameObject) {
+            const body = (traveler.gameObject as { body?: { reset?: (x: number, y: number) => void } }).body;
+            if (body?.reset) body.reset(destInst.x, destInst.y);
+            else traveler.gameObject.setPosition(destInst.x, destInst.y);
+          }
+        } else if (pendingEntry) {
+          Logger.log({ level: "log", source: "DoorArrival", message: `scene="${scene.name}"(${scene.id}) is NOT the target(${pendingEntry.destSceneId}) — kept entry for the real destination.` });
+        }
+      }
+
+      // Scene-ready gate. Fires `peaky:sceneReady` on the container once EVERY
+      // TilemapRenderer has actually rendered (a map that deferred on a missing
+      // texture flips `rendered` true when its retry re-runs `_init`), plus one
+      // extra painted frame so Phaser has drawn the finished scene. The loader's
+      // cover holds until this fires — see ScenePanel's GoToLayoutWithLoad path.
+      {
+        let sawAllReady = false;
+        const check = () => {
+          const list = (sceneForRegistry.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+          for (const s of list) {
+            if (s.destroyed) continue;
+            const tr = s.findBehaviorByKind?.("TilemapRenderer") as { rendered?: boolean } | undefined;
+            if (tr && !tr.rendered) { sawAllReady = false; return; }
+          }
+          // First frame everything's ready → wait one more so it's been painted.
+          if (!sawAllReady) { sawAllReady = true; return; }
+          sceneForRegistry.events.off(Phaser.Scenes.Events.POST_UPDATE, check);
+          sceneForRegistry.data.set("peaky.sceneReady", true);
+          try { parent.dispatchEvent(new CustomEvent("peaky:sceneReady", { bubbles: true })); } catch { /* headless */ }
+        };
+        sceneForRegistry.events.on(Phaser.Scenes.Events.POST_UPDATE, check);
+      }
       // Object pool — Map<bpId, inactiveSpriteList>. Populated by the
       // pool-fill loop at scene end; consulted by peaky.spawn (pop on
       // spawn) and by Sprite.destroy via peaky.deactivateToPool (push
@@ -2185,12 +2268,15 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
           reactivatePooledSprite(reused, arg.x, arg.y, layerIdByName(arg.layer), instVars, arg.animation, arg.frame);
           if (arg.instanceName) reused.instanceName = arg.instanceName;
           if (arg.tag) addSpriteTag(sceneForRegistry, reused, arg.tag);
+          reused.spawnId = nextSpawnId();
+          reused.spawnLayerName = arg.layer ?? "";
           applyLayerFXToSprite(reused);
           return reused;
         }
         const spawned = spawnFromBlueprint(bp, arg.x, arg.y, layerIdByName(arg.layer), undefined, undefined, instVars, undefined, undefined, arg.animation, arg.frame);
         if (spawned && arg.instanceName) spawned.instanceName = arg.instanceName;
         if (spawned && arg.tag) addSpriteTag(sceneForRegistry, spawned, arg.tag);
+        if (spawned) { spawned.spawnId = nextSpawnId(); spawned.spawnLayerName = arg.layer ?? ""; }
         if (spawned) applyLayerFXToSprite(spawned);
         return spawned;
       });
@@ -2218,6 +2304,59 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // one scene key ("main") — without this the conditions would have
       // no way to distinguish layouts.
       sceneForRegistry.data.set("peaky.activeSceneName", scene.name);
+      // Stable scene id for the spawned-object capture on level exit (see
+      // captureSpawnedForScene in eval.ts). activeSceneName is by name; this
+      // is the stable id used to bucket each level's carried-over spawns.
+      sceneForRegistry.data.set("peaky.sceneId", scene.id);
+      // Replay runtime-spawned objects (placed candles / drops) carried over
+      // from the last time the player was in THIS level — captured into
+      // PersistentState on level exit. Authored instances are already placed
+      // above; these are the things the scene itself can't re-create. Runs
+      // through peaky.spawn so each one is fully wired (collisions, layer FX).
+      // DEFINED here but RUN later (see replayCarriedSpawns() below) — sprite
+      // objects need peaky.projectSprites on scene.data to recreate, and that's
+      // set further down; running here would make spawnRuntimeSpriteObject bail.
+      const replayCarriedSpawns = () => {
+        type SpawnRec = { k?: string; spawnId: string; bpId?: string; bpName?: string; spriteId?: string; layer?: string; x: number; y: number; facingScaleX?: number; sx?: number; sy?: number; angle?: number; vars?: Record<string, unknown>; behaviors?: Array<{ kind: string; state: Record<string, unknown> }> };
+        const recs = getSceneSpawns(scene.id) as SpawnRec[];
+        Logger.log({ level: "warn", source: "SceneSave", message: `Entering scene id="${scene.id}" — ${recs.length} carried-over runtime objects to replay.` });
+        if (recs.length) {
+          const spawnFn = sceneForRegistry.data.get("peaky.spawn") as
+            | ((arg: { id?: string; name?: string; x: number; y: number; layer?: string }, opts?: { immediate?: boolean }) => Sprite | null)
+            | undefined;
+          for (const rec of recs) {
+            // Runtime sprite objects ride the same per-scene list (k:"so") but
+            // recreate through their own lightweight path, not peaky.spawn.
+            if (rec.k === "so" && rec.spriteId) {
+              const go = spawnRuntimeSpriteObject(sceneForRegistry, rec.spriteId, rec.x, rec.y, rec.layer ?? "");
+              if (go) {
+                if (typeof rec.sx === "number" && typeof rec.sy === "number") go.setScale(rec.sx, rec.sy);
+                if (typeof rec.angle === "number") go.angle = rec.angle;
+              }
+              continue;
+            }
+            const created = spawnFn?.({ id: rec.bpId, name: rec.bpName, x: rec.x, y: rec.y, layer: rec.layer || undefined }, { immediate: true });
+            if (!created) continue;
+            created.spawnId = rec.spawnId;
+            created.spawnLayerName = rec.layer ?? "";
+            if (typeof rec.facingScaleX === "number") created.facingScaleX = rec.facingScaleX;
+            if (typeof rec.sx === "number" && typeof rec.sy === "number") created.gameObject.setScale(rec.sx, rec.sy);
+            if (typeof rec.angle === "number") created.gameObject.angle = rec.angle;
+            if (rec.vars) { created.vars.clear(); for (const [k, v] of Object.entries(rec.vars)) created.vars.set(k, v as never); }
+            if (rec.behaviors) {
+              const usedByKind = new Map<string, Set<number>>();
+              for (const entry of rec.behaviors) {
+                const candidates = created.findBehaviorsByKind(entry.kind as never) as Array<{ deserialize: (s: Record<string, unknown>) => void }>;
+                let used = usedByKind.get(entry.kind);
+                if (!used) { used = new Set(); usedByKind.set(entry.kind, used); }
+                let target: { deserialize: (s: Record<string, unknown>) => void } | undefined;
+                for (let i = 0; i < candidates.length; i++) { if (used.has(i)) continue; target = candidates[i]; used.add(i); break; }
+                if (target) { try { target.deserialize(entry.state); } catch (e) { console.warn("[Peaky] carried-spawn deserialize threw", e); } }
+              }
+            }
+          }
+        }
+      };
       // Expose a layer-by-name lookup so the MoveToLayer action can
       // re-bind a sprite to a different layer at runtime (parallax,
       // visibility, base depth band).
@@ -2291,6 +2430,9 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
         if (placement.visible === false) go.setVisible(false);
         // Layer binding (parallax, depth, alpha multiplier).
         const layerName = scene.layers.find((l) => l.id === placement.layerId)?.name ?? "";
+        // Stamp the layer NAME so VisionMask's cutoutLayers filter can match this
+        // placement (it lives outside peaky.sprites, so this is its only layer tag).
+        if (layerName) go.setData("peaky.soLayer", layerName);
         const layer = layerLookup[layerName];
         if (layer) {
           go.setScrollFactor(layer.parallaxX, layer.parallaxY);
@@ -2519,20 +2661,14 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
                 sceneForRegistry.physics.add.collider(
                   otherSprite.gameObject as Phaser.Types.Physics.Arcade.GameObjectWithBody,
                   go,
-                  () => {
-                    otherSprite.events.emit("_placementCollide", { spriteId: placement.spriteId });
-                    otherSprite.events.emit(`_placementCollide:${placement.spriteId}`, { spriteId: placement.spriteId });
-                  },
+                  () => firePlacementContact(otherSprite, go, "_placementCollide", placement.spriteId),
                   () => !frameExemptsRespected(otherSprite),
                 );
               } else {
                 sceneForRegistry.physics.add.overlap(
                   otherSprite.gameObject as Phaser.Types.Physics.Arcade.GameObjectWithBody,
                   go,
-                  () => {
-                    otherSprite.events.emit("_placementOverlap", { spriteId: placement.spriteId });
-                    otherSprite.events.emit(`_placementOverlap:${placement.spriteId}`, { spriteId: placement.spriteId });
-                  },
+                  () => firePlacementContact(otherSprite, go, "_placementOverlap", placement.spriteId),
                   () => !frameExemptsRespected(otherSprite),
                 );
               }
@@ -2572,6 +2708,25 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
       // Expose the spawn helper so Game.ts's per-frame queue-drain can
       // call it under the same budget as BP spawns.
       sceneForRegistry.data.set("peaky.spawnRuntimeSpriteObject", spawnRuntimeSpriteObject);
+      // NOW replay carried-over runtime objects — peaky.projectSprites (set just
+      // above) + layers + spawn helpers are all in place, so sprite objects and
+      // BP spawns both recreate correctly.
+      replayCarriedSpawns();
+      // Re-apply tilemap edits (mined / placed tiles) carried over from the last
+      // visit to this level. The tilemaps are already built above, so their
+      // hosts (matched by stable instanceId) just deserialize the saved delta.
+      {
+        const tileEdits = getSceneTileEdits(scene.id);
+        if (Object.keys(tileEdits).length > 0) {
+          const tmList = (sceneForRegistry.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+          for (const s of tmList) {
+            const st = s.instanceId ? tileEdits[s.instanceId] : undefined;
+            if (!st) continue;
+            const tm = s.findBehaviorByKind("TilemapRenderer");
+            if (tm) { try { tm.deserialize(st as Record<string, unknown>); } catch (e) { console.warn("[Peaky] tilemap edit restore threw", e); } }
+          }
+        }
+      }
       // Full animation tables (frames + fps + loop, scale 1) for every sprite,
       // so the SetSprite action can swap a SpriteRenderer to any asset live.
       const spriteAnimTables: Record<string, Record<string, SpriteAnimRuntime>> = {};
@@ -2948,7 +3103,36 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
     // The legacy boot-only pass-2 loop here was a footgun for the
     // CreateObject path — anything spawned after scene start silently
     // dropped every collide/overlap event forever.
-  }, await buildSpritePreload(project, scene)());
+  };
+  const preload = await buildSpritePreload(project, scene)();
+  return { build, preload, effectiveScene: scene };
+}
 
+/** Initial boot — construct a fresh Peaky/Phaser.Game for `scene` and start it.
+ *  Transitions use `buildSceneOn` (rebuild on the existing game) instead. */
+export async function runScene(project: PeakyProject, scene: SceneData, parent: HTMLElement): Promise<Peaky> {
+  const { build, preload, effectiveScene: eff } = await makeSceneBuilder(project, scene, parent);
+  const game: Peaky = new Peaky({
+    width: project.viewportWidth,
+    height: project.viewportHeight,
+    layoutWidth: eff.width,
+    layoutHeight: eff.height,
+    boundedCamera: !eff.unboundedScroll,
+    backgroundColor: eff.backgroundColor,
+    gravity: eff.gravity,
+    parent,
+    inputActions: project.inputActions.map((a) => ({ name: a.name, keys: a.keys })),
+    sampling: project.sampling ?? "bilinear",
+  });
+  // Expose the active Peaky globally so the editor TopBar can poll FPS + F12 debug.
+  (window as unknown as { __peakyGame?: Peaky }).__peakyGame = game;
+  game.start(build, preload);
   return game;
+}
+
+/** In-place transition — rebuild `scene` on an EXISTING game (textures kept →
+ *  fast). Keeps the same Phaser.Game/canvas; does NOT touch `__peakyGame`. */
+export async function buildSceneOn(game: Peaky, project: PeakyProject, scene: SceneData, parent: HTMLElement): Promise<void> {
+  const { build, preload } = await makeSceneBuilder(project, scene, parent);
+  game.gotoScene(build, preload);
 }

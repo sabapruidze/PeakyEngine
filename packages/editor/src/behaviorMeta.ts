@@ -40,6 +40,11 @@ export interface BehaviorParamMeta {
    * offsets only show when the directional-offset toggle is on).
    */
   dependsOn?: { key: string; value: number | string };
+  /** For a `spriteAnim` field: which sibling param holds the sprite id whose
+   *  animations to list. Defaults to the shared spriteId/maskSpriteId. Lets a
+   *  behavior have TWO independent sprite+anim pairs (e.g. Weather shape sprite
+   *  vs splash sprite) without their animation dropdowns cross-linking. */
+  animOf?: string;
   /** When true, a note is shown under this field in the inspector IF the BP
    *  also has an AIBrain — because the brain writes this value every tick
    *  (its Chase / Patrol Speed), so editing it here has no effect on an AI NPC. */
@@ -272,6 +277,100 @@ export const BEHAVIOR_PARAMS: Record<BehaviorKind, BehaviorParamMeta[]> = {
         { value: "Elastic.Out", label: "Elastic Out" },
       ] },
     { key: "emitOnEnd", label: "Emit OnSquashStretchEnd",  default: 0, type: "bool" },
+  ],
+  Outline: [
+    { key: "on",         label: "Visible (toggle at runtime)", default: 1, type: "bool" },
+    { key: "color",      label: "Color (0xRRGGBB)",            default: 0xffe24a },
+    { key: "thickness",  label: "Thickness (px)",              default: 4 },
+    { key: "opacity",    label: "Opacity (0..1)",              default: 1 },
+    { key: "pulse",      label: "Pulse",                       default: 0, type: "bool" },
+    { key: "pulseSpeed", label: "Pulse Speed (cycles/sec)",    default: 2,
+      dependsOn: { key: "pulse", value: 1 } },
+    { key: "glow",       label: "Glow (soft feathered halo)",  default: 0, type: "bool" },
+    { key: "glowColor",  label: "Glow Color (0xRRGGBB)",       default: 0xffe24a,
+      dependsOn: { key: "glow", value: 1 } },
+    { key: "glowSize",   label: "Glow Size (px beyond outline)", default: 12,
+      dependsOn: { key: "glow", value: 1 } },
+    { key: "glowOpacity",label: "Glow Strength (0..1)",        default: 0.6,
+      dependsOn: { key: "glow", value: 1 } },
+    { key: "feather",    label: "Feather / Softness (0..1)",   default: 0.7,
+      dependsOn: { key: "glow", value: 1 } },
+  ],
+  Shadow: [
+    { key: "on",        label: "Visible (toggle at runtime)", default: 1, type: "bool" },
+    { key: "shape",     label: "Shape",                       default: "circle", type: "string",
+      options: [ { value: "circle", label: "Circle / Ellipse" }, { value: "rect", label: "Rectangle" } ] },
+    { key: "width",     label: "Width (px)",                  default: 48 },
+    { key: "height",    label: "Height (px)",                 default: 16 },
+    { key: "feather",   label: "Feather / Softness (0..1)",   default: 0.6 },
+    { key: "opacity",   label: "Opacity (0..1)",              default: 0.5 },
+    { key: "color",     label: "Color (0xRRGGBB)",            default: 0x000000 },
+    { key: "offsetX",   label: "Offset X (drag in preview)",  default: 0 },
+    { key: "offsetY",   label: "Offset Y (drag in preview)",  default: 8 },
+    { key: "groundTag", label: "Stick-to Ground Tag(s) (csv, empty = follow host)", default: "", type: "string" },
+    { key: "maxDrop",   label: "Ground Search Distance (px)", default: 600 },
+    { key: "shrinkWithHeight", label: "Shrink + fade with jump height", default: 0, type: "bool" },
+  ],
+  LightSource: [
+    { key: "on",           label: "Lit (toggle at runtime)",   default: 1, type: "bool" },
+    { key: "color",        label: "Color (0xRRGGBB)",          default: 0xffd9a0 },
+    { key: "radius",       label: "Radius (px)",               default: 140 },
+    { key: "intensity",    label: "Intensity (0..1)",          default: 1 },
+    { key: "edge",         label: "Edge", default: "smooth", type: "string", options: [
+      { value: "smooth", label: "Smooth" },
+      { value: "hard",   label: "Hard" },
+      { value: "noisy",  label: "Noisy" },
+      { value: "wave",   label: "Wave" },
+    ] },
+    { key: "feather",      label: "Feather (0 crisp … 1 soft)", default: 0.7 },
+    { key: "edgeAmount",   label: "Edge Amount (noisy/wave)",   default: 0.5 },
+    { key: "offsetX",      label: "Center X (px)",             default: 0 },
+    { key: "offsetY",      label: "Center Y (px)",             default: 0 },
+    { key: "flicker",      label: "Flicker (0..1)",            default: 0 },
+    { key: "flickerSpeed", label: "Flicker Speed",             default: 9 },
+  ],
+  Weather: [
+    { key: "on",      label: "Active (toggle at runtime)", default: 1, type: "bool" },
+    { key: "space",   label: "Space", default: "screen", type: "string", options: [
+      { value: "screen", label: "Screen (camera-fixed)" }, { value: "world", label: "World (parallax)" },
+    ] },
+    { key: "mode",    label: "Mode", default: "topdown", type: "string", options: [
+      { value: "topdown", label: "Top-down (varied height)" },
+      { value: "sidescroller", label: "Side-scroller (die on tags)" },
+    ] },
+    { key: "killTags", label: "Kill Tags (side-scroller)", default: "", type: "tagList" },
+    { key: "shelterTags", label: "Shelter Tags (fully dry)", default: "", type: "tagList" },
+    { key: "shelterDrizzleTags", label: "Shelter Tags (no splash)", default: "", type: "tagList" },
+    { key: "count",     label: "Density (count)",      default: 160 },
+    { key: "speed",     label: "Fall Speed (px/s)",    default: 380 },
+    { key: "speedJitter", label: "Speed Random (0..1)", default: 0.3 },
+    { key: "angle",     label: "Fall Direction (deg)", default: 12 },
+    { key: "wind",      label: "Wind (px/s)",          default: 0 },
+    { key: "rotationSpeed", label: "Rotation Speed (deg/s)", default: 0 },
+    { key: "shape",     label: "Shape", default: "line", type: "string", options: [
+      { value: "line", label: "Line" }, { value: "circle", label: "Circle" }, { value: "sprite", label: "Sprite" },
+    ] },
+    { key: "spriteId",  label: "Sprite", default: "", type: "spriteRef",
+      dependsOn: { key: "shape", value: "sprite" } },
+    { key: "size",      label: "Size (px)",            default: 14 },
+    { key: "sizeJitter", label: "Size Random (0..1)",  default: 0.4 },
+    { key: "thickness", label: "Line Thickness (px)",  default: 2,
+      dependsOn: { key: "shape", value: "line" } },
+    { key: "color",     label: "Color (0xRRGGBB)",     default: 0xaaccff },
+    { key: "alpha",     label: "Opacity (0..1)",       default: 0.6 },
+    { key: "sway",      label: "Sway (px, snow drift)", default: 0 },
+    { key: "swaySpeed", label: "Sway Speed",           default: 1.5 },
+    { key: "splash",      label: "Splash on Land", default: 0, type: "bool" },
+    { key: "splashType",  label: "Splash Type", default: "simple", type: "string",
+      dependsOn: { key: "splash", value: 1 }, options: [
+        { value: "simple", label: "Simple (pixels)" }, { value: "sprite", label: "Sprite (animation)" },
+      ] },
+    { key: "splashSprite", label: "Splash Sprite", default: "", type: "spriteRef",
+      dependsOn: { key: "splashType", value: "sprite" } },
+    { key: "splashAnim",   label: "Splash Animation", default: "", type: "spriteAnim",
+      animOf: "splashSprite", dependsOn: { key: "splashType", value: "sprite" } },
+    { key: "splashScale",  label: "Splash Scale", default: 1,
+      dependsOn: { key: "splashType", value: "sprite" } },
   ],
   // UIWidgetRenderer is attached automatically at UI-widget spawn time;
   // its config is built from the widget's flat fields. Empty params

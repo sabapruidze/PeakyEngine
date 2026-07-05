@@ -29,11 +29,13 @@ export type LogicTriggerKind =
   | "OnDestroyed"
   | "OnCollide"
   | "OnOverlap"
+  | "OnOverlapForSeconds"
   | "OnSeparate"
   | "OnSignal"
   | "OnComboStep"
   | "OnKeyPressed"
   | "OnKeyHeld"
+  | "OnKeyHeldFor"
   | "OnKeyReleased"
   | "OnDoubleKeyPressed"
   | "InputCombo"
@@ -86,6 +88,8 @@ export type LogicTriggerKind =
   | "OnMouseWheel"
   | "OnObjectClicked"
   | "OnObjectDoubleClicked"
+  | "OnObjectHovered"
+  | "OnObjectUnhovered"
   | "OnTweenStart"
   | "OnTweenFinish"
   | "OnDialogueStart"
@@ -213,6 +217,111 @@ export function destroyLogicSheet(sprite: Sprite): void {
   ATTACHED.delete(sprite);
 }
 
+/** Topmost (highest-depth) live sprite whose body contains world point
+ *  (wx, wy). When `tag` is set, only sprites carrying it count. Used by the
+ *  Get Hovered Object getter to resolve what's under the cursor on demand.
+ *  (The object click / hover TRIGGERS are per-instance self hit-tests, not
+ *  this global scan — so hovering one instance fires only that instance.) */
+/** What the cursor hit, across the pickable categories. */
+type HoverHit = { kind: "bp" | "tile" | "spriteobj" | "widget"; name: string; tag: string; instanceTag: string; uid: number; x: number; y: number };
+
+/** Topmost (highest-depth) thing under world point (wx, wy) across the enabled
+ *  categories — BP instances, tilemap tiles, sprite-object placements, UI
+ *  widgets. Hit-tests VISIBLE bounds (so colliderless sprites still pick). `tag`
+ *  filters within each category. Used by Get Hovered Object so a Main Sheet /
+ *  any BP can pick whatever's under the cursor and choose which categories count. */
+function topThingAt(
+  sprite: Sprite, wx: number, wy: number, tag: string,
+  cats: { bp: boolean; tiles: boolean; spriteObjects: boolean; widgets: boolean },
+): HoverHit | null {
+  const scene = sprite.scene;
+  let best: HoverHit | null = null, bestDepth = -Infinity;
+  const within = (go: { getBounds?: () => Phaser.Geom.Rectangle; visible?: boolean } | undefined): boolean => {
+    if (!go || go.visible === false || typeof go.getBounds !== "function") return false;
+    const b = go.getBounds();
+    return wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom;
+  };
+  const consider = (hit: HoverHit, depth: number) => { if (depth >= bestDepth) { bestDepth = depth; best = hit; } };
+
+  if (cats.bp) {
+    const list = (scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+    for (const s of list) {
+      if (s.destroyed || s._pooled) continue;
+      // UI widget hosts live in peaky.sprites too — they belong to the Widgets
+      // category, not Blueprints, so the BP scan must skip them.
+      if (s.isUIWidget) continue;
+      if (tag && !s.tags.has(tag)) continue;
+      const sr = s.findBehaviorByKind("SpriteRenderer") as { overlay?: Phaser.GameObjects.Image } | undefined;
+      const go = (sr?.overlay && sr.overlay.visible ? sr.overlay : s.gameObject) as
+        (Phaser.GameObjects.GameObject & { getBounds?: () => Phaser.Geom.Rectangle; depth?: number; visible?: boolean }) | undefined;
+      let inside = false, depth = 0;
+      if (go && typeof go.getBounds === "function") { inside = within(go); depth = go.depth ?? 0; }
+      else if (s.body) { const b = s.body; inside = wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom; depth = s.gameObject?.depth ?? 0; }
+      if (inside) consider({ kind: "bp", name: s.instanceName || s.blueprintName || "", tag: [...s.tags][0] ?? "", instanceTag: [...s.instanceTags][0] ?? "", uid: s.uid, x: s.gameObject?.x ?? 0, y: s.gameObject?.y ?? 0 }, depth);
+    }
+  }
+  if (cats.tiles) {
+    const reg = (scene.data.get("peaky.bigTileImages") as { img: Phaser.GameObjects.GameObject & { getBounds?: () => Phaser.Geom.Rectangle; depth?: number; x?: number; y?: number; visible?: boolean }; tags?: string[] }[] | undefined) ?? [];
+    for (const t of reg) {
+      if (tag && !(t.tags ?? []).includes(tag)) continue;
+      if (!within(t.img)) continue;
+      const bb = t.img.getBounds!();
+      consider({ kind: "tile", name: "", tag: (t.tags ?? [])[0] ?? "", instanceTag: "", uid: 0, x: t.img.x ?? bb.centerX, y: t.img.y ?? bb.centerY }, t.img.depth ?? 0);
+    }
+  }
+  if (cats.spriteObjects) {
+    const idx = scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.Sprite[]> | undefined;
+    if (idx) {
+      for (const [spriteId, arr] of idx) {
+        for (const g of arr) {
+          const go = g as Phaser.GameObjects.Sprite & { getBounds?: () => Phaser.Geom.Rectangle; depth?: number; visible?: boolean; active?: boolean; x: number; y: number; getData?: (k: string) => unknown };
+          if (!go || go.active === false || !within(go)) continue;
+          const dtags = go.getData?.("peaky.tags") as string[] | undefined;
+          if (tag && !(dtags ?? []).includes(tag)) continue;
+          consider({ kind: "spriteobj", name: spriteId, tag: (dtags ?? [])[0] ?? "", instanceTag: "", uid: 0, x: go.x, y: go.y }, go.depth ?? 0);
+        }
+      }
+    }
+  }
+  if (cats.widgets) {
+    // UI widgets are screen-space (scrollFactor 0), so hit-test the SCREEN
+    // pointer, not world coords. Widget hosts are sprites carrying a
+    // UIWidgetRenderer. They sit on top, so bias depth high.
+    const ptr = scene.input.activePointer;
+    const px = ptr.x, py = ptr.y;
+    const list = (scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+    for (const s of list) {
+      if (s.destroyed || s._pooled) continue;
+      if (!s.isUIWidget) continue;
+      if (tag && !s.tags.has(tag)) continue;
+      const go = s.gameObject as (Phaser.GameObjects.GameObject & { getBounds?: () => Phaser.Geom.Rectangle; depth?: number; visible?: boolean; x?: number; y?: number }) | undefined;
+      if (!go || go.visible === false || typeof go.getBounds !== "function") continue;
+      const b = go.getBounds();
+      if (px >= b.x && px <= b.right && py >= b.y && py <= b.bottom) {
+        consider({ kind: "widget", name: s.instanceName || s.blueprintName || "", tag: [...s.tags][0] ?? "", instanceTag: "", uid: s.uid, x: go.x ?? 0, y: go.y ?? 0 }, (go.depth ?? 0) + 1_000_000);
+      }
+    }
+  }
+  return best;
+}
+
+/** Is world point (wx, wy) over THIS sprite's visible bounds? Uses the
+ *  SpriteRenderer overlay (art) or the host gameObject, so an object with NO
+ *  collider still registers clicks/hovers; falls back to the body if neither
+ *  exposes bounds. */
+function cursorOverSprite(s: Sprite, wx: number, wy: number): boolean {
+  if (s.destroyed || s._pooled) return false;
+  const sr = s.findBehaviorByKind("SpriteRenderer") as { overlay?: Phaser.GameObjects.Image } | undefined;
+  const go = (sr?.overlay && sr.overlay.visible ? sr.overlay : s.gameObject) as
+    (Phaser.GameObjects.GameObject & { getBounds?: () => Phaser.Geom.Rectangle; visible?: boolean }) | undefined;
+  if (go && go.visible !== false && typeof go.getBounds === "function") {
+    const b = go.getBounds();
+    return wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom;
+  }
+  if (s.body) { const b = s.body; return wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom; }
+  return false;
+}
+
 function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGraphNode): (() => void) | null {
   // `trigger.kind === "trigger"` and `trigger.type` carries the actual
   // engine event name (OnCollide / OnSignal / …). Execution begins at
@@ -245,7 +354,14 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
       // attachLogicSheet and abort the rest of scene boot (later sprites
       // never spawn → "scene half-built, can't move").
       try { fire(); } catch (e) { console.warn(`[LogicSheet] OnCreate chain threw on uid=${sprite.uid}`, e); }
-      return null;
+      // Pooled reuse re-spawns via reactivatePooledSprite, which emits
+      // "OnCreate" on the bus. Nothing emits it on first spawn (that path
+      // fires synchronously above), so this subscription only runs on pool
+      // reactivation — no double-fire. Without it, a pooled BP's OnCreate
+      // init (velocity / animation / vars) is dead on every reuse.
+      return sprite.events.on("OnCreate", () => {
+        try { fire(); } catch (e) { console.warn(`[LogicSheet] OnCreate chain threw on uid=${sprite.uid}`, e); }
+      });
     }
     case "OnDestroyed": {
       // Sprite.destroy() emits `_onDestroyed` on the bus BEFORE the
@@ -394,32 +510,29 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
       // BP (or its tags, when params.tag is set). Polled via pointerdown
       // + manual hit-test so we honor the engine's same-frame picking
       // rules (no drag, no continuous press).
+      // Per-instance: fires for THIS sprite when the cursor is over ITS OWN
+      // body — so clicking one instance fires only that instance, not every
+      // instance of the BP. `tag` (optional) gates to this sprite carrying it.
       const wantTag = String(trigger.params.tag ?? "");
       const handler = (ptr: Phaser.Input.Pointer) => {
-        if (sprite.destroyed || !sprite.body) return;
+        if (wantTag && !sprite.tags.has(wantTag)) return;
         const wx = ptr.worldX ?? ptr.x + sprite.scene.cameras.main.scrollX;
         const wy = ptr.worldY ?? ptr.y + sprite.scene.cameras.main.scrollY;
-        const b = sprite.body;
-        const inside = wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom;
-        if (!inside) return;
-        if (wantTag && !sprite.tags.has(wantTag)) return;
-        fire();
+        if (cursorOverSprite(sprite, wx, wy)) fire();
       };
       sprite.scene.input.on("pointerdown", handler);
       return () => sprite.scene.input.off("pointerdown", handler);
     }
     case "OnObjectDoubleClicked": {
+      // Per-instance, same self hit-test as OnObjectClicked.
       const wantTag = String(trigger.params.tag ?? "");
       const windowSec = 0.5;
       let lastAt = -Infinity;
       const handler = (ptr: Phaser.Input.Pointer) => {
-        if (sprite.destroyed || !sprite.body) return;
+        if (wantTag && !sprite.tags.has(wantTag)) return;
         const wx = ptr.worldX ?? ptr.x + sprite.scene.cameras.main.scrollX;
         const wy = ptr.worldY ?? ptr.y + sprite.scene.cameras.main.scrollY;
-        const b = sprite.body;
-        const inside = wx >= b.x && wx <= b.right && wy >= b.y && wy <= b.bottom;
-        if (!inside) return;
-        if (wantTag && !sprite.tags.has(wantTag)) return;
+        if (!cursorOverSprite(sprite, wx, wy)) return;
         const now = sprite.scene.time.now / 1000;
         if (now - lastAt <= windowSec) {
           lastAt = -Infinity;
@@ -430,6 +543,30 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
       };
       sprite.scene.input.on("pointerdown", handler);
       return () => sprite.scene.input.off("pointerdown", handler);
+    }
+    case "OnObjectHovered":
+    case "OnObjectUnhovered": {
+      // Edge trigger on the cursor entering (Hovered) / leaving (Unhovered)
+      // THIS sprite's body. Polled on pointermove + same self-hit-test as the
+      // click triggers. `tag` (optional) gates to this sprite carrying it.
+      // Note: driven by pointer MOVEMENT, so an object sliding under a still
+      // cursor won't re-edge — fine for the usual "mouse over a sprite" UX.
+      // Per-instance: edge on the cursor entering / leaving THIS sprite's body,
+      // so hovering one instance fires only that instance. `tag` (optional)
+      // gates to this sprite carrying it.
+      const wantTag = String(trigger.params.tag ?? "");
+      const wantEnter = kind === "OnObjectHovered";
+      let wasOver = false;
+      const check = (ptr: Phaser.Input.Pointer) => {
+        if (sprite.destroyed) return;
+        const wx = ptr.worldX ?? ptr.x + sprite.scene.cameras.main.scrollX;
+        const wy = ptr.worldY ?? ptr.y + sprite.scene.cameras.main.scrollY;
+        const inside = cursorOverSprite(sprite, wx, wy) && (!wantTag || sprite.tags.has(wantTag));
+        if (inside && !wasOver) { wasOver = true; if (wantEnter) fire(); }
+        else if (!inside && wasOver) { wasOver = false; if (!wantEnter) fire(); }
+      };
+      sprite.scene.input.on("pointermove", check);
+      return () => sprite.scene.input.off("pointermove", check);
     }
     case "OnKeyPressed": {
       const actionName = String(trigger.params.action ?? "");
@@ -515,6 +652,60 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
           fire();
         } else {
           lastPressAt = now;
+        }
+      };
+      sprite.scene.events.on("update", onUpdate);
+      return () => sprite.scene.events.off("update", onUpdate);
+    }
+    case "OnKeyHeldFor": {
+      // Long-press / charge trigger — fires ONCE when the named input has
+      // been held continuously for `seconds`. Re-arms only after release, so
+      // each hold fires at most once (charged-shot release, hold-to-interact).
+      const actionName = String(trigger.params.action ?? "");
+      const seconds = Math.max(0, Number(trigger.params.seconds ?? 1));
+      if (!actionName) {
+        Logger.log({ level: "warn", source: "OnKeyHeldFor", message: `No input action selected on the node — it can never fire. Pick an action.` });
+        return null;
+      }
+      let heldSince = -1; // sim seconds when the current hold began; -1 = not held
+      let fired = false;  // already fired for the current hold
+      const onUpdate = () => {
+        if (sprite.destroyed) return;
+        const ia = getInputActions(sprite.scene);
+        if (!ia) return;
+        if (ia.isDown(actionName)) {
+          const now = sprite.scene.time.now / 1000;
+          if (heldSince < 0) { heldSince = now; fired = false; }
+          else if (!fired && (now - heldSince) >= seconds) { fired = true; fire(); }
+        } else {
+          heldSince = -1;
+          fired = false;
+        }
+      };
+      sprite.scene.events.on("update", onUpdate);
+      return () => sprite.scene.events.off("update", onUpdate);
+    }
+    case "OnOverlapForSeconds": {
+      // Proximity hold — fires ONCE after this sprite has continuously
+      // overlapped a sprite carrying `tag` (empty = ANY) for `seconds`. Re-arms
+      // after separation. Gates on CollisionScan's per-tick `_currOverlap` set
+      // (the source of truth for "who am I overlapping right now").
+      const tag = String(trigger.params.tag ?? "");
+      const seconds = Math.max(0, Number(trigger.params.seconds ?? 1));
+      let overlapSince = -1; // sim seconds when the current overlap began; -1 = none
+      let fired = false;     // already fired for the current overlap window
+      const onUpdate = () => {
+        if (sprite.destroyed) return;
+        const overlapping = tag
+          ? [...sprite._currOverlap].some((o) => o.tags.has(tag))
+          : sprite._currOverlap.size > 0;
+        if (overlapping) {
+          const now = sprite.scene.time.now / 1000;
+          if (overlapSince < 0) { overlapSince = now; fired = false; }
+          else if (!fired && (now - overlapSince) >= seconds) { fired = true; fire(); }
+        } else {
+          overlapSince = -1;
+          fired = false;
         }
       };
       sprite.scene.events.on("update", onUpdate);
@@ -1528,6 +1719,116 @@ function readDataOut(node: LogicGraphNode, pin: string, sprite: Sprite, edges: L
         case "y":           return o.gameObject?.y ?? 0;
         default:            return 0;
       }
+    }
+    if (node.type === "GetOverlappingObject") {
+      // What the host is CURRENTLY overlapping (live each tick via CollisionScan),
+      // queried on demand — e.g. from an OnKeyPressed chain where there's no
+      // collision event in context. Optional `tag` narrows the match; empty =
+      // the first current overlap. Returns "" / 0 when nothing overlaps.
+      const want = String(node.params.tag ?? "").trim();
+      let o: Sprite | null = null;
+      for (const other of sprite._currOverlap) {
+        if (other.destroyed) continue;
+        if (!want || other.tags.has(want)) { o = other; break; }
+      }
+      const isStr = pin === "name" || pin === "tag" || pin === "instanceTag";
+      if (!o) return isStr ? "" : 0;
+      switch (pin) {
+        case "name":        return o.instanceName || o.blueprintName || "";
+        case "tag":         return [...o.tags][0] ?? "";
+        case "instanceTag": return [...o.instanceTags][0] ?? "";
+        case "uid":         return o.uid;
+        case "x":           return o.gameObject?.x ?? 0;
+        case "y":           return o.gameObject?.y ?? 0;
+        default:            return 0;
+      }
+    }
+    if (node.type === "GetHoveredObject") {
+      // The TOPMOST thing under the cursor, queried on demand from ANY sheet
+      // (Main Sheet / any BP). Category toggles decide what counts: bp (default
+      // on) / tiles / spriteObjects. `tag` filters within them. `kind` output
+      // says which category was hit ("bp" / "tile" / "spriteobj").
+      const ptr = sprite.scene.input.activePointer;
+      const cam = sprite.scene.cameras?.main;
+      const wx = ptr.worldX ?? (ptr.x + (cam?.scrollX ?? 0));
+      const wy = ptr.worldY ?? (ptr.y + (cam?.scrollY ?? 0));
+      const cats = {
+        bp: node.params.bp === undefined ? true : !!node.params.bp,
+        tiles: !!node.params.tiles,
+        spriteObjects: !!node.params.spriteObjects,
+        widgets: !!node.params.widgets,
+      };
+      const hit = topThingAt(sprite, wx, wy, String(node.params.tag ?? "").trim(), cats);
+      const isStr = pin === "name" || pin === "tag" || pin === "instanceTag" || pin === "kind";
+      if (!hit) return isStr ? "" : 0;
+      switch (pin) {
+        case "name":        return hit.name;
+        case "tag":         return hit.tag;
+        case "instanceTag": return hit.instanceTag;
+        case "kind":        return hit.kind;
+        case "uid":         return hit.uid;
+        case "x":           return hit.x;
+        case "y":           return hit.y;
+        default:            return 0;
+      }
+    }
+    if (node.type === "GetDistance") {
+      // Distance (px) between a FROM point and a TO target.
+      //   from (distFrom): self (this instance — default) | instance (by name).
+      //         Use "instance" in the Main Sheet, which has no host position.
+      //   to (distTo): picked / tag (nearest) / bp (nearest) / instance (by
+      //         name) / mouse / point (x,y, expressions allowed).
+      // Returns a large number when an endpoint can't resolve, so
+      // `GetDistance < range` reads FALSE instead of a false positive.
+      const byName = (name: string): Sprite | null => {
+        const n = String(name ?? "").trim();
+        if (!n) return null;
+        const list = (sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
+        return list.find((s) => !s.destroyed && (s.instanceName === n || s.blueprintName === n)) ?? null;
+      };
+      // FROM point.
+      let fromSprite: Sprite | null = sprite;
+      let fx: number | null = null, fy: number | null = null;
+      if (String(node.params.distFrom ?? "self") === "instance") {
+        fromSprite = byName(String(node.params.instanceFrom ?? ""));
+      }
+      if (fromSprite?.gameObject) { fx = fromSprite.gameObject.x; fy = fromSprite.gameObject.y; }
+      if (fx === null || fy === null) return 1e9;
+      // TO point.
+      const mode = String(node.params.distTo ?? "picked");
+      let tx: number | null = null, ty: number | null = null;
+      if (mode === "mouse") {
+        const ptr = sprite.scene.input.activePointer;
+        const cam = sprite.scene.cameras.main;
+        tx = ptr.worldX ?? (ptr.x + cam.scrollX);
+        ty = ptr.worldY ?? (ptr.y + cam.scrollY);
+      } else if (mode === "point") {
+        tx = numOr(node.params.x, 0, sprite);
+        ty = numOr(node.params.y, 0, sprite);
+      } else if (mode === "picked") {
+        const o = sprite.scene?.data?.get("peaky.picked") as Sprite | undefined;
+        if (o && !o.destroyed && o.gameObject) { tx = o.gameObject.x; ty = o.gameObject.y; }
+      } else if (mode === "instance") {
+        const ts = byName(String(node.params.instance ?? ""));
+        if (ts?.gameObject) { tx = ts.gameObject.x; ty = ts.gameObject.y; }
+      } else {
+        const want = String((mode === "tag" ? node.params.tag : node.params.bp) ?? "").trim();
+        if (want) {
+          const candidates = mode === "tag"
+            ? spritesByTag(sprite, want)
+            : ((sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? []);
+          let bestD2 = Infinity;
+          for (const s of candidates) {
+            if (s.destroyed || s === fromSprite || !s.gameObject) continue;
+            if (mode === "bp" && s.blueprintName !== want) continue;
+            const dx = s.gameObject.x - fx, dy = s.gameObject.y - fy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) { bestD2 = d2; tx = s.gameObject.x; ty = s.gameObject.y; }
+          }
+        }
+      }
+      if (tx === null || ty === null) return 1e9;
+      return Math.hypot(tx - fx, ty - fy);
     }
     if (node.type === "GetPicked") {
       // The PICKED instance — collide/overlap auto-picks the other sprite, and

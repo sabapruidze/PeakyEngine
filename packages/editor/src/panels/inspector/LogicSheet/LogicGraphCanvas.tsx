@@ -39,6 +39,8 @@ import { SignalPicker } from "../../../components/SignalPicker";
 import { ColorField, isColorParamKey } from "../../../components/ColorField";
 import { ExpressionPicker, type ExprGroup, type ExprObject, type ExprToken } from "../../../components/ExpressionPicker";
 import { ComponentIcon } from "../../../componentIcons";
+import { BigTilePreview } from "../../TilesetTab";
+import { animFrameRegion } from "../../../project";
 
 interface LogicGraphCanvasProps {
   folder: LogicFolder;
@@ -52,6 +54,7 @@ export const PIN_COLORS: Record<string, string> = {
   string:    "#f472d0", // pink
   boolean:   "#ff5a5a", // red
   spriteRef: "#b07bff",
+  any:       "#cccccc", // gray — accepts any data type (e.g. Switch value)
 };
 
 /** Live ref to the active LogicGraphCanvas's splitEdge callback. Module-
@@ -479,7 +482,11 @@ export function nodeShape(node: LogicGraphNode, varTypes?: Map<string, "number" 
           ...cases.map((c) => ({ pin: `case_${c.id}`, label: String(c.value ?? "") || "(empty)" })),
           { pin: "default", label: "default" },
         ],
-        inData: [{ pin: "value", type: "string" }],
+        // `any` — the value is compared by string coercion at runtime
+        // (String(raw) === case), so a number / bool / string getter can all
+        // wire in. The validator only blocks mismatched PRIMITIVES, so `any`
+        // accepts every source type.
+        inData: [{ pin: "value", type: "any" }],
         outData: [],
       };
     }
@@ -612,6 +619,59 @@ export function nodeShape(node: LogicGraphNode, varTypes?: Map<string, "number" 
           { pin: "x", type: "number" },
           { pin: "y", type: "number" },
         ],
+      };
+    }
+    if (node.type === "GetOverlappingObject") {
+      // What the host is CURRENTLY overlapping, queried on demand (no collision
+      // event needed) — e.g. press E → read the object you're standing on.
+      // Optional `tag` narrows the match; empty = first current overlap.
+      return {
+        label: "Get Overlapping Object",
+        params: node.params,
+        inExec: [],
+        outExec: [],
+        inData: [],
+        outData: [
+          { pin: "name", type: "string" },
+          { pin: "tag", type: "string" },
+          { pin: "instanceTag", type: "string" },
+          { pin: "uid", type: "number" },
+          { pin: "x", type: "number" },
+          { pin: "y", type: "number" },
+        ],
+      };
+    }
+    if (node.type === "GetHoveredObject") {
+      // The topmost thing under the cursor, from any sheet. Category toggles
+      // (bp / tiles / spriteObjects) decide what counts; `tag` filters; `kind`
+      // output says which category was hit.
+      return {
+        label: "Get Hovered Object",
+        params: node.params,
+        inExec: [],
+        outExec: [],
+        inData: [],
+        outData: [
+          { pin: "name", type: "string" },
+          { pin: "tag", type: "string" },
+          { pin: "instanceTag", type: "string" },
+          { pin: "kind", type: "string" },
+          { pin: "uid", type: "number" },
+          { pin: "x", type: "number" },
+          { pin: "y", type: "number" },
+        ],
+      };
+    }
+    if (node.type === "GetDistance") {
+      // Distance (px) from self to a target: picked / nearest-tag / named-BP /
+      // mouse / point. Single number output — wire into CompareValues.
+      return {
+        label: "Get Distance",
+        params: node.params,
+        inExec: [],
+        outExec: [],
+        inData: [],
+        outData: [{ pin: "out", type: "number" }],
       };
     }
     if (node.type === "GetPicked") {
@@ -851,6 +911,17 @@ export const ENUM_PARAM_KEYS: ReadonlySet<string> = new Set([
   "override", "affectPhysics", "affectParticles", "forceRestart",
 ]);
 
+// Action node type → the one value param that should accept ANY source (the
+// runtime String()-coerces it, so a number/distance/count can be wired in and
+// printed/shown). Without this the field is a string pin that rejects numbers.
+const ANY_VALUE_PIN: Record<string, string> = {
+  PrintString: "message",
+  Log: "message",
+  SetText: "text",
+  AppendText: "text",
+  SetUIText: "text",
+};
+
 export function computeActionInputPins(node: LogicGraphNode): { pin: string; type: string; label?: string }[] {
   // SetUIElement is edited entirely inline (per-element toggles); exposing a
   // data pin for every param — including the internal `set_*` toggles — just
@@ -878,6 +949,13 @@ export function computeActionInputPins(node: LogicGraphNode): { pin: string; typ
   const out: { pin: string; type: string; label?: string }[] = [];
   for (const [key, val] of Object.entries(node.params)) {
     if (ENUM_PARAM_KEYS.has(key)) continue;
+    // Text-display actions String()-coerce their value at runtime, so the
+    // message/text field should accept a NUMBER (or anything) source — e.g.
+    // print a distance / count. A string pin blocked wiring a numeric getter.
+    if (ANY_VALUE_PIN[node.type] === key) {
+      out.push({ pin: key, type: "any", label: key });
+      continue;
+    }
     // Pin type is the param's CANONICAL type (from ACTION_DEFAULTS), not the
     // live value — so a numeric field (frame, scale, x…) stays a number pin
     // even when the author types an inline expression like random(0,5) into
@@ -902,6 +980,14 @@ export function computeConditionInputPins(node: LogicGraphNode): { pin: string; 
   const out: { pin: string; type: string; label?: string }[] = [];
   for (const [key, val] of Object.entries(node.params)) {
     if (ENUM_PARAM_KEYS.has(key)) continue;
+    // CompareValues compares two ARBITRARY expressions — its left/right accept
+    // a number OR string source (the runtime coerces: numeric compare when both
+    // parse as numbers, else string). Type them `any` so a numeric getter (Get
+    // Distance, Count By Tag, var reads) can wire in — string pins blocked it.
+    if (node.type === "CompareValues" && (key === "left" || key === "right")) {
+      out.push({ pin: key, type: "any", label: key });
+      continue;
+    }
     // Canonical type (from CONDITION_PARAM_DEFAULTS) keeps a numeric compare
     // value a number pin even when an inline expression is typed in. See
     // computeActionInputPins for the rationale.
@@ -926,6 +1012,25 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
     for (const c of connections) if (c.targetHandle) s.add(c.targetHandle);
     return s;
   }, [connections]);
+  // Visual BigTile / Animated-tile picker source. Resolve the chosen tilemap →
+  // its tilesets (primary + extras, fall back to all), then list each BigTile /
+  // animated tile with its owning tileset so we can render a real thumbnail via
+  // BigTilePreview. Hooks run unconditionally to keep hook order stable.
+  const allTilemaps = useEditor((s) => s.project.tilemaps);
+  const allTilesets = useEditor((s) => s.project.tilesets);
+  const tilePicker = useMemo(() => {
+    const isBig = "bigTileId" in params, isAnim = "animatedTileId" in params;
+    if (!TILEMAP_NODE_TYPES.has(data.nodeType) || (!isBig && !isAnim)) return null;
+    const tm = (allTilemaps ?? []).find((m) => m.name === String(params.tilemap ?? ""));
+    const ids = tm ? [tm.tilesetId, ...((tm.extraTilesetIds ?? []))] : [];
+    let sets = ids.map((id) => (allTilesets ?? []).find((t) => t.id === id)).filter((t): t is NonNullable<typeof t> => !!t);
+    if (sets.length === 0) sets = (allTilesets ?? []);
+    const kind: "big" | "anim" = isBig ? "big" : "anim";
+    const items = sets.flatMap((ts) => kind === "big"
+      ? (ts.bigTiles ?? []).map((bt) => ({ ts, id: bt.id, name: (bt as { name?: string }).name, region: bt }))
+      : (ts.animatedTiles ?? []).filter((a) => (a.frames?.length ?? 0) > 0).map((a) => ({ ts, id: a.id, name: a.name, region: animFrameRegion(a.frames[0], ts.cols) })));
+    return { kind, items };
+  }, [allTilemaps, allTilesets, data.nodeType, params]);
   // Comment nodes render as a transparent yellow note with an inline
   // editable textarea — no header, no pins, no body grid.
   if (label === "" && "text" in params) {
@@ -1007,7 +1112,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
   const ALWAYS_VISIBLE_WHEN_OVERRIDE_OFF = new Set(["override", "count", "target"]);
   // SetUIVisible: in toggle mode the explicit `visible` value is meaningless
   // (it flips current visibility), so hide it; show it only in set mode.
-  const hideVisibleForToggle = data.nodeType === "SetUIVisible" && params.mode === "toggle";
+  const hideVisibleForToggle = (data.nodeType === "SetUIVisible" || data.nodeType === "SetVisible") && params.mode === "toggle";
   // EditTags: only the fields needed for the current mode render.
   //   insert  → just the new tag (free text + expressions).
   //   remove  → just oldTag (chip dropdown of existing project tags).
@@ -1032,12 +1137,21 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
   // box w/h are all ignored (tracer > w/h > self-hitbox) — hide them.
   const hideMineXY = (data.nodeType === "MineTileAtWorld" || data.nodeType === "DamageTileAtWorld")
     && String(params.tracer ?? "") !== "";
-  // Merge the action's CANONICAL param schema (ACTION_DEFAULTS) with the node's
-  // saved params, so a newly-added field (e.g. PlayPlacementAnim.destroyOnFinish)
-  // shows up on nodes that were placed BEFORE the field existed — without a
-  // migration or forcing the author to delete/re-add the node.
-  const actionDefaultsForType = (ACTION_DEFAULTS as Record<string, Record<string, unknown>>)[data.nodeType] ?? {};
-  const paramKeys = Array.from(new Set([...Object.keys(params), ...Object.keys(actionDefaultsForType)])).filter((k) =>
+  // Get Distance: show only the field that matches the chosen from/to modes.
+  const isGetDistance = data.nodeType === "GetDistance";
+  const distTo = isGetDistance ? String(params.distTo ?? "picked") : "";
+  const distFrom = isGetDistance ? String(params.distFrom ?? "self") : "";
+  const hideDistTag = isGetDistance && distTo !== "tag";
+  const hideDistBp  = isGetDistance && distTo !== "bp";
+  const hideDistInstance = isGetDistance && distTo !== "instance";
+  const hideDistInstanceFrom = isGetDistance && distFrom !== "instance";
+  const hideDistXY  = isGetDistance && distTo !== "point";
+  // Render exactly the node's OWN saved params — do NOT merge ACTION_DEFAULTS
+  // keys in. Friendly nodes remap their schema (SetVar uses `var`, EmitSignal
+  // uses `signal`) so a blind merge surfaced phantom fields (`name`, etc.) and
+  // duplicate pickers. New palette params reach existing nodes via re-add, not
+  // a merge.
+  const paramKeys = Object.keys(params).filter((k) =>
     k !== "spawnVars" // rendered by the dedicated spawn-var editor below
     && (!hasOverrideToggle || overrideOn || ALWAYS_VISIBLE_WHEN_OVERRIDE_OFF.has(k))
     && !(hideVisibleForToggle && k === "visible")
@@ -1049,6 +1163,14 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
     && !(hideDropFrame && k === "frame")
     && !(hideEffectLayer && k === "layer")
     && !(hideMineXY && (k === "x" || k === "y" || k === "w" || k === "h"))
+    && !(hideDistTag && k === "tag")
+    && !(hideDistBp && k === "bp")
+    && !(hideDistInstance && k === "instance")
+    && !(hideDistInstanceFrom && k === "instanceFrom")
+    && !(hideDistXY && (k === "x" || k === "y"))
+    // Get Hovered Object's category flags render as checkboxes in their own
+    // section below, not as raw 1/0 fields here.
+    && !(data.nodeType === "GetHoveredObject" && (k === "bp" || k === "tiles" || k === "spriteObjects" || k === "widgets"))
   );
   // Shared bag of dropdown/option props every ParamField needs — spread into
   // each so both the generic loop and the custom SetUIElement section stay in
@@ -1094,6 +1216,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
   const FIREPROJ_ESSENTIAL = ["blueprintName", "spawnImagePoint"];
   const FIREPROJ_OVERRIDES: Array<{ flag: string; key: string }> = [
     { flag: "ovrMode",             key: "mode" },
+    { flag: "ovrAngle",            key: "angle" },
     { flag: "ovrSpeed",            key: "speed" },
     { flag: "ovrLifetime",         key: "lifetime" },
     { flag: "ovrGravityX",         key: "gravityX" },
@@ -1262,7 +1385,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
                 ) : (
                   <ParamField
                     paramKey={k}
-                    value={k in params ? params[k] : actionDefaultsForType[k]}
+                    value={params[k]}
                     {...sharedParamProps}
                     onChange={(v) => onParamChange(nodeId, { [k]: v })}
                   />
@@ -1357,6 +1480,54 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
           })}
         </div>
       )}
+      {!collapsed && data.nodeType === "GetHoveredObject" && (
+        <div style={{
+          padding: "6px 10px 8px 16px", display: "flex", flexDirection: "column", gap: 5,
+          borderBottom: "1px solid rgba(255,255,255,0.05)",
+        }}>
+          <span style={{ fontSize: 9, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>Detect (any ticked)</span>
+          {([["bp", "Blueprints"], ["spriteObjects", "Sprite Objects"], ["tiles", "Tilemaps"], ["widgets", "Widgets"]] as const).map(([key, lbl]) => (
+            <label key={key} className="nodrag" onMouseDown={(e) => e.stopPropagation()}
+              style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: params[key] ? "#f0f0f0" : "#888", cursor: "pointer" }}>
+              <Toggle value={!!params[key]} onChange={(v) => onParamChange(nodeId, { [key]: v ? 1 : 0 })} />
+              {lbl}
+            </label>
+          ))}
+        </div>
+      )}
+      {!collapsed && tilePicker && (
+        <div className="nodrag" onMouseDown={(e) => e.stopPropagation()} style={{
+          padding: "6px 10px 8px 16px", display: "flex", flexDirection: "column", gap: 5,
+          borderBottom: "1px solid rgba(255,255,255,0.05)",
+        }}>
+          <span style={{ fontSize: 9, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>
+            {tilePicker.kind === "big" ? "BigTile" : "Animated Tile"} — click to pick
+          </span>
+          {tilePicker.items.length === 0 ? (
+            <span style={{ fontSize: 10, color: "#888" }}>
+              {params.tilemap ? "This tileset has none defined." : "Pick a tilemap above first."}
+            </span>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 160, overflowY: "auto", padding: 3, background: "rgba(0,0,0,0.25)", borderRadius: 4 }}>
+              {tilePicker.items.map((it) => {
+                const key = tilePicker.kind === "big" ? "bigTileId" : "animatedTileId";
+                const cur = String((tilePicker.kind === "big" ? params.bigTileId : params.animatedTileId) ?? "");
+                const sel = cur === it.id || (!!it.name && cur === it.name);
+                return (
+                  <div key={it.id} title={it.name || it.id} onClick={() => onParamChange(nodeId, { [key]: it.id })}
+                    style={{
+                      cursor: "pointer", padding: 2, borderRadius: 3,
+                      outline: sel ? "2px solid #7fd0ff" : "1px solid rgba(255,255,255,0.1)",
+                      background: sel ? "rgba(127,208,255,0.15)" : "transparent",
+                    }}>
+                    <BigTilePreview ts={it.ts} bt={it.region} maxPx={42} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
       {!collapsed && isFireProjectile && (
         <div style={{
           padding: "8px 10px 8px 0", display: "flex", flexDirection: "column", gap: 6,
@@ -1380,7 +1551,7 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
                 ) : (
                   <ParamField
                     paramKey={k}
-                    value={k in params ? params[k] : actionDefaultsForType[k]}
+                    value={params[k]}
                     {...sharedParamProps}
                     onChange={(v) => onParamChange(nodeId, { [k]: v })}
                   />
@@ -1485,6 +1656,8 @@ function LogicNodeView({ data, selected }: { data: NodeData; selected?: boolean 
  *  add a per-node override here rather than renaming the param. */
 const PARAM_LABEL_OVERRIDES_BY_NODE: Record<string, Record<string, string>> = {
   CreateSpriteObject: { spriteId: "Sprite" },
+  TweenVar: { varName: "Variable", duration: "Duration (s)", ease: "Easing", tweenTag: "Tween Tag (optional)", repeat: "Repeat (-1 = forever)", yoyo: "Yoyo (0/1)" },
+  TweenParam: { duration: "Duration (s)", ease: "Easing", tweenTag: "Tween Tag (optional)", repeat: "Repeat (-1 = forever)", yoyo: "Yoyo (0/1)" },
 };
 
 function paramLabel(paramKey: string, nodeType?: string): string {
@@ -1502,6 +1675,8 @@ const PARAM_LABELS: Record<string, string> = {
   componentName: "Which one (blank = first)",
   behavior: "Component type",
   param: "Parameter",
+  fromVal: "From",
+  toVal: "To",
   stopRadius: "Stop Within (px)",
   tmParam: "TM Parameter",
   persist: "Remember (don't respawn)",
@@ -1572,7 +1747,8 @@ const TILEMAP_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   "SetTileAtWorld", "RemoveTileAtWorld",
   "FillTileRect", "ReplaceTile",
   "RemoveTilesInTracer", "FillTilesInTracer",
-  "PlaceBigTile", "RemoveBigTileAtWorld", "RemoveBigTileAt",
+  "PlaceBigTile", "PlaceBigTileAtWorld", "PlaceAnimatedTileAtWorld",
+  "RemoveBigTileAtWorld", "RemoveBigTileAt",
   "DamageTile", "DamageTileAtWorld", "MineTileAtWorld", "RestoreTileHP",
   "PlayTileAnimation", "PlayTileAnimationAtWorld",
   "StopTileAnimation", "StopTileAnimationAtWorld",
@@ -2453,21 +2629,21 @@ function pickDropdown(
   // variable picker — the bug the author hit on SetBool. Route them
   // here so each picks the right variable list by type.
   if (key === "name" && opts.nodeType) {
+    // The SET family writes a var on THIS BP, so offer only the host's OWN
+    // variables — not cross-object `Object.field` paths (those are dotted; the
+    // host's own names are bare). Use SetVarOn to write another object's var.
     if (opts.nodeType === "SetBool" || opts.nodeType === "ToggleBool") {
-      return opts.boolVarNames.length > 0
-        ? { options: opts.boolVarNames, placeholder: "bool variable" }
-        : null;
+      const ns = opts.boolVarNames.filter((n) => !n.includes("."));
+      return ns.length > 0 ? { options: ns, placeholder: "bool variable" } : null;
     }
     if (opts.nodeType === "AddVar" || opts.nodeType === "SubVar") {
       // Add/Sub are arithmetic — number vars only.
-      return opts.numberVarNames.length > 0
-        ? { options: opts.numberVarNames, placeholder: "number variable" }
-        : null;
+      const ns = opts.numberVarNames.filter((n) => !n.includes("."));
+      return ns.length > 0 ? { options: ns, placeholder: "number variable" } : null;
     }
     if (opts.nodeType === "SetVar") {
       // Set Variable accepts number OR string vars (bools go through Set Bool).
-      // number+string = every var minus the bool ones.
-      const ns = opts.varNames.filter((n) => !opts.boolVarNames.includes(n));
+      const ns = opts.varNames.filter((n) => !opts.boolVarNames.includes(n) && !n.includes("."));
       return ns.length > 0 ? { options: ns, placeholder: "variable" } : null;
     }
     if (opts.nodeType === "PlayAnimatorAnim" || opts.nodeType === "StopAnimatorAnim") {
@@ -2502,14 +2678,17 @@ function pickDropdown(
       //   ToggleVar → bool vars only · IncrementVar → number vars only ·
       //   SetVar → number OR string (bools use Toggle Var). Everything else
       //   that reads a var (GetVar, etc.) sees every variable.
+      // Host's OWN variables only (no cross-object `Object.field` paths).
       if (opts.nodeType === "ToggleVar") {
-        return opts.boolVarNames.length > 0 ? { options: opts.boolVarNames, placeholder: "bool variable" } : null;
+        const ns = opts.boolVarNames.filter((n) => !n.includes("."));
+        return ns.length > 0 ? { options: ns, placeholder: "bool variable" } : null;
       }
       if (opts.nodeType === "IncrementVar") {
-        return opts.numberVarNames.length > 0 ? { options: opts.numberVarNames, placeholder: "number variable" } : null;
+        const ns = opts.numberVarNames.filter((n) => !n.includes("."));
+        return ns.length > 0 ? { options: ns, placeholder: "number variable" } : null;
       }
       if (opts.nodeType === "SetVar") {
-        const ns = opts.varNames.filter((n) => !opts.boolVarNames.includes(n));
+        const ns = opts.varNames.filter((n) => !opts.boolVarNames.includes(n) && !n.includes("."));
         return ns.length > 0 ? { options: ns, placeholder: "variable" } : null;
       }
       return opts.varNames.length > 0 ? { options: opts.varNames, placeholder: "variable" } : null;
@@ -2625,6 +2804,13 @@ function pickDropdown(
         opts.nodeType === "TweenStop" || opts.nodeType === "TweenPause" ||
         opts.nodeType === "TweenResume"
       ) return null;
+      // OnCollide / OnOverlap: an EMPTY tag means "any object" at runtime
+      // (CollisionScan emits the bare OnCollide for every collider). Make that
+      // discoverable via the placeholder; picking a tag narrows it. Either way
+      // the Get Collided Object node returns the object.
+      if (opts.nodeType === "OnCollide" || opts.nodeType === "OnOverlap" || opts.nodeType === "OnOverlapForSeconds") {
+        return { options: opts.tagOptions, placeholder: "any object — or pick a tag" };
+      }
       return opts.tagOptions.length > 0 ? { options: opts.tagOptions, placeholder: "tag" } : null;
     case "state": {
       // On Combo Step restricts to states that HAVE combos — listing
@@ -2742,12 +2928,21 @@ function pickDropdown(
       // visibility). Scoped by nodeType so the bare `mode` key on other
       // actions (CMSetCeilingMode / CMSetMirror) and the AND/OR Combinator
       // toggle keep their own editors.
-      if (opts.nodeType === "SetUIVisible") return { options: ["set", "toggle"], placeholder: "mode" };
+      if (opts.nodeType === "SetUIVisible" || opts.nodeType === "SetVisible") return { options: ["set", "toggle"], placeholder: "mode" };
       if (opts.nodeType === "SetPaused") return { options: ["pause", "resume", "toggle"], placeholder: "mode" };
       if (opts.nodeType === "EditTags") return { options: ["insert", "remove", "replace"], placeholder: "mode" };
       if (opts.nodeType === "SetSpriteObjectCollideMode") return { options: ["include", "exclude"], placeholder: "mode" };
       if (opts.nodeType === "PatrolNavPoints") return { options: ["loop", "pingpong", "random", "nearest"], placeholder: "mode" };
       return null;
+    case "distFrom":
+      // Get Distance source. self = this instance (no field). instance = a
+      // sprite by name (needed in the Main Sheet, which has no host position).
+      return { options: ["self", "instance"], placeholder: "measure from" };
+    case "distTo":
+      // Get Distance "measure to" mode. tag → nearest tagged; bp → nearest
+      // named blueprint; instance → a sprite by name; point → x/y;
+      // picked/mouse need no extra field.
+      return { options: ["picked", "tag", "bp", "instance", "mouse", "point"], placeholder: "measure to" };
     case "targetKind":
       // Tween target selector:
       //   self          → the BP running the action
@@ -2858,30 +3053,13 @@ function pickDropdown(
       }
       return opts.layerNames.length > 0 ? { options: opts.layerNames, placeholder: "scene layer" } : null;
     }
-    case "bigTileId": {
-      // BigTile picker — sibling `tilemap` chooses which tileset's BigTile
-      // list to offer. Falls back to free-text when no tilemap is selected,
-      // or when the chosen tilemap's tileset declares no BigTiles.
-      const sib = typeof siblingParams.tilemap === "string" ? siblingParams.tilemap : "";
-      if (!sib) return null;
-      const list = opts.tilemapBigTilesByName[sib] ?? [];
-      if (list.length === 0) return null;
-      const labels: Record<string, string> = {};
-      for (const b of list) labels[b.id] = b.name && b.name.length > 0 ? b.name : b.id.slice(0, 8);
-      return { options: list.map((b) => b.id), placeholder: "BigTile", labels };
-    }
-    case "animatedTileId": {
-      // AnimatedTile picker — same shape as bigTileId. Empty selection is
-      // valid ("all animated tiles") for the play-all / stop-all actions, so
-      // we still surface the dropdown with an "all" placeholder when present.
-      const sib = typeof siblingParams.tilemap === "string" ? siblingParams.tilemap : "";
-      if (!sib) return null;
-      const list = opts.tilemapAnimatedTilesByName[sib] ?? [];
-      if (list.length === 0) return null;
-      const labels: Record<string, string> = {};
-      for (const a of list) labels[a.id] = a.name && a.name.length > 0 ? a.name : a.id.slice(0, 8);
-      return { options: list.map((a) => a.id), placeholder: "animated tile", labels };
-    }
+    case "bigTileId":
+    case "animatedTileId":
+      // Free-text / expression field — pick visually via the BigTilePreview grid
+      // (LogicNodeView), OR type a tile NAME, OR feed `var:x` to change what's
+      // placed at runtime. The runtime resolves name → id. Returning null here
+      // renders the typeable input instead of a fixed dropdown.
+      return null;
     case "cmParam": {
       // Whitelist CharacterMovement fields that CMSet / CompareCMParam
       // actually read at runtime. Mirrors the CM behavior's public params.
@@ -3337,9 +3515,48 @@ export function LogicGraphCanvas({ folder, bp, onChange }: LogicGraphCanvasProps
       }
     }
     addGroup("Component signals", compSig, (n) => compSrc[n] ?? "Component signal");
-    const all = Array.from(new Set([...declared, ...tile, ...bpSig, ...compSig]));
+    // UI widget element signals — button click / slider change / dropdown
+    // select / slot / craft, plus per-option signals. These broadcast
+    // scene-wide now, so ANY blueprint's OnSignal can hear them — without
+    // listing them here the author couldn't pick a button's signal in a BP.
+    const widgetSig: string[] = [];
+    const widgetSrc: Record<string, string> = {};
+    const SIG_KEYS = ["signalOnClick", "signalOnHover", "signalOnLeave", "signalOnChange", "signalOnSelect", "signalOnSlotClick", "signalOnSlotDoubleClick", "signalOnCraftClick", "signalOnCraft"];
+    const collectWidgetSig = (v: Record<string, unknown>, wName: string) => {
+      for (const k of SIG_KEYS) {
+        const s = v[k];
+        const sig = typeof s === "string" ? s.trim() : "";
+        if (sig) { widgetSig.push(sig); widgetSrc[sig] ??= `Widget "${wName}"`; }
+      }
+      const opts = v.options as Array<{ signal?: unknown }> | undefined;
+      for (const o of opts ?? []) {
+        const sig = typeof o?.signal === "string" ? o.signal.trim() : "";
+        if (sig) { widgetSig.push(sig); widgetSrc[sig] ??= `Widget "${wName}" · option`; }
+      }
+    };
+    for (const w of uiWidgets) {
+      collectWidgetSig(w as unknown as Record<string, unknown>, w.name);
+      for (const c of w.children ?? []) collectWidgetSig(c as unknown as Record<string, unknown>, w.name);
+    }
+    addGroup("Widget signals", widgetSig, (n) => widgetSrc[n] ?? "Widget signal");
+    // Emitted in widget logic sheets (EmitSignal / EmitSignalTo nodes) — same
+    // scan as blueprints, so a signal a widget's sheet sends is selectable in
+    // the BP listening for it.
+    const widgetEmit: string[] = [];
+    const widgetEmitSrc: Record<string, string> = {};
+    for (const w of uiWidgets) {
+      for (const folder of w.logicSheet?.folders ?? []) {
+        for (const node of folder.graph?.nodes ?? []) {
+          if (node.type !== "EmitSignal" && node.type !== "EmitSignalTo") continue;
+          const sig = String((node.params as Record<string, unknown>)?.signal ?? (node.params as Record<string, unknown>)?.name ?? "").trim();
+          if (sig) { widgetEmit.push(sig); widgetEmitSrc[sig] ??= `Widget "${w.name}"`; }
+        }
+      }
+    }
+    addGroup("Emitted by widgets", widgetEmit, (n) => widgetEmitSrc[n] ?? "Widget");
+    const all = Array.from(new Set([...declared, ...tile, ...bpSig, ...compSig, ...widgetSig, ...widgetEmit]));
     return { all, sources, groups };
-  }, [signals, tilesets, blueprints]);
+  }, [signals, tilesets, blueprints, uiWidgets]);
   const signalNames = signalCatalog.all;
   const globalVarNames = useMemo(() => {
     const set = new Set<string>();
@@ -3629,10 +3846,14 @@ export function LogicGraphCanvas({ folder, bp, onChange }: LogicGraphCanvasProps
   // `bigTileId` param dropdown on PlaceBigTile / RemoveBigTileAt(World).
   const tilemapBigTilesByName = useMemo(() => {
     const out: Record<string, { id: string; name?: string }[]> = {};
+    // Fallback: every BigTile across all tilesets, so the picker is never empty
+    // when the author HAS BigTiles but the tilemap→tileset link is off.
+    const all = (tilesets ?? []).flatMap((t) => (t.bigTiles ?? []).map((b) => ({ id: b.id, name: (b as { name?: string }).name })));
     for (const m of (tilemaps ?? [])) {
       if (!m.name) continue;
-      const ts = (tilesets ?? []).find((t) => t.id === m.tilesetId);
-      out[m.name] = (ts?.bigTiles ?? []).map((b) => ({ id: b.id, name: undefined }));
+      const ids = [m.tilesetId, ...((m.extraTilesetIds ?? []))];
+      const big = ids.flatMap((id) => (tilesets ?? []).find((t) => t.id === id)?.bigTiles ?? []).map((b) => ({ id: b.id, name: (b as { name?: string }).name }));
+      out[m.name] = big.length > 0 ? big : all;
     }
     return out;
   }, [tilemaps, tilesets]);
@@ -3640,10 +3861,12 @@ export function LogicGraphCanvas({ folder, bp, onChange }: LogicGraphCanvasProps
   // `animatedTileId` param dropdown on Play/Stop tile-animation actions.
   const tilemapAnimatedTilesByName = useMemo(() => {
     const out: Record<string, { id: string; name?: string }[]> = {};
+    const all = (tilesets ?? []).flatMap((t) => (t.animatedTiles ?? []).map((a) => ({ id: a.id, name: a.name })));
     for (const m of (tilemaps ?? [])) {
       if (!m.name) continue;
-      const ts = (tilesets ?? []).find((t) => t.id === m.tilesetId);
-      out[m.name] = (ts?.animatedTiles ?? []).map((a) => ({ id: a.id, name: a.name }));
+      const ids = [m.tilesetId, ...((m.extraTilesetIds ?? []))];
+      const anim = ids.flatMap((id) => (tilesets ?? []).find((t) => t.id === id)?.animatedTiles ?? []).map((a) => ({ id: a.id, name: a.name }));
+      out[m.name] = anim.length > 0 ? anim : all;
     }
     return out;
   }, [tilemaps, tilesets]);
@@ -4897,9 +5120,11 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "OnCollide",         kind: "trigger", label: "On Collide (tag)",   defaults: { tag: "" } },
       { type: "OnOverlap",         kind: "trigger", label: "On Overlap (tag)",   defaults: { tag: "" } },
       { type: "OnSeparate",        kind: "trigger", label: "On End Overlap (tag)", defaults: { tag: "" } },
+      { type: "OnOverlapForSeconds", kind: "trigger", label: "On Overlap For (s)", defaults: { tag: "", seconds: 1 } },
       { type: "OnSignal",          kind: "trigger", label: "On Signal",          defaults: { signal: "" } },
       { type: "OnKeyPressed",      kind: "trigger", label: "On Key Pressed",     defaults: { action: "" } },
       { type: "OnKeyHeld",         kind: "trigger", label: "On Key Held",        defaults: { action: "" } },
+      { type: "OnKeyHeldFor",      kind: "trigger", label: "On Key Held For (s)", defaults: { action: "", seconds: 1 } },
       { type: "OnKeyReleased",     kind: "trigger", label: "On Key Released",    defaults: { action: "" } },
       { type: "OnDoubleKeyPressed",kind: "trigger", label: "On Double Key Pressed", defaults: { action: "", windowSec: 0.3 } },
       { type: "InputCombo",        kind: "trigger", label: "Input Combo (multi-key)", defaults: { comboKeys: [] } },
@@ -4936,6 +5161,9 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "OnMouseWheel",      kind: "trigger", label: "On Mouse Wheel",     defaults: {} },
       { type: "OnObjectClicked",   kind: "trigger", label: "On Object Clicked",  defaults: { tag: "" } },
       { type: "OnObjectDoubleClicked", kind: "trigger", label: "On Object Double-Clicked", defaults: { tag: "" } },
+      { type: "OnObjectHovered",   kind: "trigger", label: "On Object Hovered",  defaults: { tag: "" } },
+      { type: "OnObjectUnhovered", kind: "trigger", label: "On Object Unhovered", defaults: { tag: "" } },
+      { type: "IsCursorOverObject", kind: "condition", label: "Is Cursor Over Object", defaults: { tags: [] } },
       { type: "OnJump",            kind: "trigger", label: "On Jump",            defaults: {} },
       { type: "OnLand",            kind: "trigger", label: "On Land",            defaults: {} },
       { type: "OnFall",            kind: "trigger", label: "On Fall",            defaults: {} },
@@ -5003,6 +5231,9 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "AlertNearbyAllies", kind: "action", label: "Alert Nearby Allies", defaults: { tag: "enemy", radius: 200 } },
       { type: "SetBehaviorParam",  kind: "action", label: "Set Component Param", defaults: { behavior: "CharacterMovement", componentName: "", params: [{ param: "maxSpeed", value: 200 }] } },
       { type: "SetBehaviorEnabled",kind: "action", label: "Enable/Disable Comp", defaults: { behavior: "CharacterMovement", enabled: true } },
+      { type: "TweenVar",          kind: "action", label: "Tween Variable (smooth)", defaults: { varName: "", fromVal: 0, toVal: 5, duration: 1, ease: "Linear", tweenTag: "", repeat: 0, yoyo: 0 } },
+      { type: "TweenParam",        kind: "action", label: "Tween Component Param (smooth)", defaults: { behavior: "LightSource", param: "radius", componentName: "", fromVal: 0, toVal: 200, duration: 1, ease: "Linear", tweenTag: "", repeat: 0, yoyo: 0 } },
+      { type: "SetVisible",        kind: "action", label: "Set Visible (whole BP)", defaults: { mode: "set", visible: 1 } },
       { type: "GoToLayoutWithLoad",kind: "action", label: "Go To Layout (with loading)", defaults: { name: "", minDisplaySec: 0 } },
       { type: "SetLoadingProgress",kind: "action", label: "Set Loading Progress (0..1)", defaults: { pct: 0 } },
       { type: "SetLoadingScene",   kind: "action", label: "Set Loading Scene (one-shot override)", defaults: { name: "" } },
@@ -5011,7 +5242,7 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "PlayPlacementAnim", kind: "action", label: "Play Sprite Object Animation",defaults: { spriteId: "", animation: "", loop: true, startFrame: 0, destroyOnFinish: false } },
       { type: "StopPlacementAnim", kind: "action", label: "Stop Sprite Object Animation",defaults: { spriteId: "" } },
       { type: "SetPlacementPos",   kind: "action", label: "Set Sprite Object Position",  defaults: { spriteId: "", x: 0, y: 0 } },
-      { type: "CreateSpriteObject",kind: "action", label: "Create Sprite Object",        defaults: { spriteId: "", x: 0, y: 0 } },
+      { type: "CreateSpriteObject",kind: "action", label: "Create Sprite Object",        defaults: { spriteId: "", x: 0, y: 0, layer: "" } },
       { type: "DestroySpriteObject",kind: "action",label: "Destroy Sprite Object",       defaults: { spriteId: "" } },
       { type: "SetPlacementScale", kind: "action", label: "Set Sprite Object Scale",     defaults: { spriteId: "", scaleX: 1, scaleY: 1 } },
       { type: "SetPlacementRotation",kind:"action",label: "Set Sprite Object Rotation",  defaults: { spriteId: "", rotation: 0 } },
@@ -5049,8 +5280,10 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "HasAllTags",         kind: "condition", label: "Has All Tags (AND)", defaults: { tags: [] } },
       { type: "IsLoading",          kind: "condition", label: "Is Loading",         defaults: {} },
       { type: "IsScene",            kind: "condition", label: "Is Scene ==",        defaults: { scene: "" } },
-      { type: "OnCollideWithSpriteObject", kind: "trigger", label: "On Collide with Sprite Object", defaults: { spriteId: "" } },
-      { type: "OnOverlapWithSpriteObject", kind: "trigger", label: "On Overlap with Sprite Object", defaults: { spriteId: "" } },
+      // Sprite-object collide/overlap are RETIRED from the palette — a collidable
+      // Sprite Object now fires the unified `On Collide`/`On Overlap [tag]` nodes
+      // (see firePlacementContact). Tag the placement and use those instead. The
+      // runtime + ConditionKind are kept so older saves still load.
       { type: "OnSpriteObjectCreate",      kind: "trigger", label: "On Sprite Object Create",       defaults: { spriteId: "" } },
       { type: "OnSpriteObjectDestroy",     kind: "trigger", label: "On Sprite Object Destroy",      defaults: { spriteId: "" } },
       { type: "IsAnimationPlaying", kind: "condition", label: "Animation playing", defaults: { anim: "" } },
@@ -5058,7 +5291,7 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "IsGrounded",         kind: "condition", label: "Is grounded",       defaults: {} },
       { type: "IsByWall",           kind: "condition", label: "By wall",           defaults: {} },
       { type: "IsDialoguePlaying",  kind: "condition", label: "Dialogue playing",  defaults: {} },
-      { type: "IsAIState",                kind: "condition", label: "AI state ==",          defaults: { state: "idle" } },
+      { type: "IsAIState",                kind: "condition", label: "AI state ==",          defaults: { action: "idle" } },
       { type: "IsTargetSighted",          kind: "condition", label: "Target is sighted",    defaults: {} },
       { type: "DistanceToTargetBelow",    kind: "condition", label: "Distance to target <", defaults: { value: 100 } },
     ],
@@ -5088,6 +5321,9 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { type: "GetListValue", kind: "getter",  label: "Get List Item",       defaults: { list: "", key: "", field: "value" } },
       { type: "GetGlobalValue", kind: "getter", label: "Get Global Value",   defaults: { global: "", field: "value", index: 0 } },
       { type: "GetOtherObject", kind: "getter", label: "Get Collided Object", defaults: {} },
+      { type: "GetOverlappingObject", kind: "getter", label: "Get Overlapping Object", defaults: { tag: "" } },
+      { type: "GetHoveredObject", kind: "getter", label: "Get Hovered Object", defaults: { tag: "", bp: 1, spriteObjects: 0, tiles: 0, widgets: 0 } },
+      { type: "GetDistance", kind: "getter", label: "Get Distance", defaults: { distFrom: "self", instanceFrom: "", distTo: "picked", tag: "", bp: "", instance: "", x: 0, y: 0 } },
       { type: "GetPicked", kind: "getter", label: "Get Picked", defaults: { bp: "", field: "x" } },
       { type: "GetTags",     kind: "getter",   label: "Get Tags (CSV)",      defaults: {} },
       { type: "CountByTag",  kind: "getter",   label: "Count By Tag",        defaults: { tag: "" } },
@@ -5158,8 +5394,8 @@ export function inferPinType(conn: Connection, folder: LogicFolder, varTypes?: M
   if (src.kind === "getter") {
     // For GetTracerField, actorName returns a string; everything else
     // is numeric. Other future getter types can extend this switch.
-    if (src.type === "GetOtherObject") {
-      return (conn.sourceHandle === "name" || conn.sourceHandle === "tag" || conn.sourceHandle === "instanceTag") ? "string" : "number";
+    if (src.type === "GetOtherObject" || src.type === "GetOverlappingObject" || src.type === "GetHoveredObject") {
+      return (conn.sourceHandle === "name" || conn.sourceHandle === "tag" || conn.sourceHandle === "instanceTag" || conn.sourceHandle === "kind") ? "string" : "number";
     }
     if (src.type === "GetSlotItem") return "string";
     if (src.type === "GetTracerField") {

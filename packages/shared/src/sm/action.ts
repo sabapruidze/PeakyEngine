@@ -202,6 +202,8 @@ export type StateActionKind =
   | "TweenPauseAll"          // pause every tween on this sprite
   | "TweenResume"            // resume a paused tween by tag
   | "TweenResumeAll"         // resume every paused tween on this sprite
+  | "TweenVar"               // lerp a VARIABLE from→to over a duration (delta-driven, eased)
+  | "TweenParam"             // lerp a COMPONENT param (e.g. LightSource.radius) from→to over a duration (delta-driven, eased)
   // Dialogue
   | "PlayDialogue"           // play a project DialogueAsset by id
   | "StopDialogue"           // cancel the running dialogue (if any)
@@ -247,6 +249,7 @@ export type StateActionKind =
   | "QuitGame"               // close the game (browser: tries window.close(), emits OnGameQuit)
   | "BlurScene"              // toggle / set blur on the main camera (UI cam stays crisp)
   | "SetScreenEffect"        // grayscale / VHS / chromatic post-FX on the world (main cam)
+  | "SetAmbientLight"        // ambient darkness level + tint; LightSource glows punch through
   // ── Universal transform actions ─────────────────────────────────────
   // Apply to ANY sprite (BPs and UI widgets alike). Self-targeted.
   | "SetAngle"               // set rotation in degrees
@@ -254,6 +257,7 @@ export type StateActionKind =
   | "SetScaleX"              // horizontal scale only
   | "SetScaleY"              // vertical scale only
   | "SetOpacity"             // alpha 0..1
+  | "SetVisible"             // show / hide (or toggle) the WHOLE BP (body + all overlays)
   | "MoveToLayer"            // move sprite to a different render layer (by name)
   | "SetZOrder"              // set z-depth within the current layer (higher = on top)
   // ── Mouse cursor ──────────────────────────────────────────────────────
@@ -272,6 +276,7 @@ export type StateActionKind =
   | "FillTilesInTracer"      // fill every tile whose center sits inside a named tracer's box
   // ── BigTile (Tier 3: composite multi-cell props like trees / rocks) ─
   | "PlaceBigTile"           // stamp a BigTile by id at cell (c, r) anchor
+  | "PlaceBigTileAtWorld"    // stamp a BigTile by id at the cell containing world (x, y)
   | "RemoveBigTileAtWorld"   // remove the BigTile covering world (x, y)
   | "RemoveBigTileAt"        // remove the BigTile covering cell (c, r)
   | "TracerSet"              // set any tracer parameter at runtime (CMSet for Tracer)
@@ -283,6 +288,7 @@ export type StateActionKind =
   // ── Animated tile control (cycling placements) ──────────────────────
   | "PlayTileAnimation"      // start one animated-tile placement at (c, r); restart + loop overrides
   | "PlayTileAnimationAtWorld"  // same but resolves cell from world (x, y) — like MineTileAtWorld
+  | "PlaceAnimatedTileAtWorld"  // stamp a NEW animated-tile placement at the cell containing world (x, y)
   | "StopTileAnimation"      // freeze one animated-tile placement at (c, r)
   | "StopTileAnimationAtWorld"  // same but resolves cell from world (x, y)
   | "PlayAllTileAnimations"  // bulk play — optionally filtered to one animated-tile id
@@ -487,6 +493,8 @@ export const ACTION_KINDS: StateActionKind[] = [
   "TweenPauseAll",
   "TweenResume",
   "TweenResumeAll",
+  "TweenVar",
+  "TweenParam",
   "PlayDialogue",
   "StopDialogue",
   "PlayMusic",
@@ -520,11 +528,13 @@ export const ACTION_KINDS: StateActionKind[] = [
   "QuitGame",
   "BlurScene",
   "SetScreenEffect",
+  "SetAmbientLight",
   "SetAngle",
   "SetScale",
   "SetScaleX",
   "SetScaleY",
   "SetOpacity",
+  "SetVisible",
   "MoveToLayer",
   "SetZOrder",
   "SetCursor",
@@ -540,6 +550,7 @@ export const ACTION_KINDS: StateActionKind[] = [
   "RemoveTilesInTracer",
   "FillTilesInTracer",
   "PlaceBigTile",
+  "PlaceBigTileAtWorld",
   "RemoveBigTileAtWorld",
   "RemoveBigTileAt",
   "TracerSet",
@@ -549,6 +560,7 @@ export const ACTION_KINDS: StateActionKind[] = [
   "RestoreTileHP",
   "PlayTileAnimation",
   "PlayTileAnimationAtWorld",
+  "PlaceAnimatedTileAtWorld",
   "StopTileAnimation",
   "StopTileAnimationAtWorld",
   "PlayAllTileAnimations",
@@ -735,6 +747,8 @@ export const ACTION_DESCRIPTIONS: Record<StateActionKind, string> = {
   TweenPauseAll: "Pause every active tween on this sprite.",
   TweenResume: "Resume a paused tween by tag.",
   TweenResumeAll: "Resume every paused tween on this sprite.",
+  TweenVar: "Smoothly lerp a VARIABLE from a start value to an end value over a duration, with easing. Frame-independent (real-time driven), so the ramp speed is steady regardless of framerate. Use yoyo + repeat for a pulsing value. Tag identifies it for Tween Stop / Pause by tag. Re-running with the same tag restarts it.",
+  TweenParam: "Smoothly lerp a COMPONENT parameter (e.g. LightSource.radius / intensity) from a start value to an end value over a duration, with easing — a growing light pool, a fading glow, etc. Frame-independent. Pick the component and a numeric parameter. Use yoyo + repeat for pulsing. Tag identifies it for Tween Stop / Pause by tag.",
   PlayDialogue: "Play a Dialogue asset. The runner shows its built-in bubble UI above the speaker (overhead) or fixed at the camera bottom (box). Press the advance action to step through. No-op while another dialogue is already playing.",
   StopDialogue: "Cancel the running dialogue immediately. Clears the bubble and emits OnDialogueEnd.",
   PlayMusic: "Play a Music sound asset. Loops by default and replaces whatever music is currently playing (single track). Optional fade-in seconds. Routed through master × music volume.",
@@ -768,11 +782,13 @@ export const ACTION_DESCRIPTIONS: Record<StateActionKind, string> = {
   QuitGame: "Quit the game. In browser, attempts window.close() (only works for popups) and emits OnGameQuit so the user can route to a 'goodbye' screen / external URL via OnSignal.",
   BlurScene: "Apply a Gaussian blur post-FX to the world (main camera) — UI widgets stay crisp on top. Pass strength 0 to remove. Useful for pause menus.",
   SetScreenEffect: "Apply a post-FX. Target = screen (whole world, main camera — UI stays crisp) or layer (every object on a named layer; follows spawns + MoveToLayer). Pick the effect (grayscale / vhs / chromatic / filmgrain) + intensity 0..1 (0 = remove). Effects stack: one node per effect. NOTE: on a layer, vhs/chromatic apply per-object (each sprite splits around its own center), grayscale/filmgrain look uniform.",
+  SetAmbientLight: "Set the scene's ambient darkness — amount 0 = full daylight, 1 = pitch-black night — with a darkness tint colour. LightSource components glow THROUGH it, revealing lit pools (torches / candles). Call it again with a different amount (or ramp it) for a day-night or dream transition.",
   SetAngle: "Set the running sprite's rotation in degrees (0..360). Pair with the Compare Property condition to read it back.",
   SetScale: "Set the running sprite's uniform scale (both X and Y at once). 1=natural size, 2=double, 0.5=half.",
   SetScaleX: "Set horizontal scale only. Negative flips the sprite. Y unchanged.",
   SetScaleY: "Set vertical scale only. Negative flips the sprite. X unchanged.",
   SetOpacity: "Set the running sprite's alpha (0=invisible, 1=opaque).",
+  SetVisible: "Show, hide, or TOGGLE the WHOLE Blueprint instance — body + every overlay (sprite, text, particles) at once. mode=set uses the visible flag; mode=toggle flips it (e.g. press E → toggle). Unlike SetOpacity (which only fades the body), this skips rendering entirely, and survives going off-screen.",
   MoveToLayer: "Move the running sprite to a different render layer (by layer name). Updates parallax + depth band so the sprite renders on the new layer.",
   SetZOrder: "Set the sprite's depth within the current layer (higher = renders on top of siblings). Use to put a UI widget above another, or a sprite above a background.",
   SetCursor: "Change the mouse cursor to a CSS style (default, pointer, crosshair, none, wait, text, move, grab, etc.).",
@@ -788,6 +804,8 @@ export const ACTION_DESCRIPTIONS: Record<StateActionKind, string> = {
   RemoveTilesInTracer: "Clear every tile whose center sits inside the named tracer's box. Uses LIVE tracer geometry (current pivot + angle + distance + boxThickness), so the action works regardless of whether the tracer has fired this frame. Tracer must be box shape; line tracers contribute zero area.",
   FillTilesInTracer: "Fill every tile whose center sits inside the named tracer's box with one tile index. Same live-geometry semantics as RemoveTilesInTracer.",
   PlaceBigTile: "Stamp a BigTile (composite multi-cell prop from the tileset) at cell (c, r) on the named tilemap + layer. The BigTile is identified by its id from the tileset's BigTile list. Position is rejected if the BigTile would extend past the map's bounds.",
+  PlaceBigTileAtWorld: "Stamp a BigTile at the cell that contains world (x, y) on the named tilemap + layer — the place-at-cursor version of Place BigTile. Feed x/y from mouse.x/mouse.y (or a sprite position). No-op if (x, y) is outside the tilemap or the BigTile would extend past its bounds.",
+  PlaceAnimatedTileAtWorld: "Create a NEW animated-tile placement at the cell that contains world (x, y) on the named tilemap + layer. Pick the animated tile from the tileset's Animated Tile list. Feed x/y from mouse.x/mouse.y. No-op if (x, y) is outside the tilemap.",
   RemoveBigTileAtWorld: "Remove the BigTile placement that covers world (x, y) on the named tilemap + layer. Destroys its visual + collision body. No-op if no BigTile sits there.",
   RemoveBigTileAt: "Remove the BigTile placement that covers cell (c, r) on the named tilemap + layer. Same as RemoveBigTileAtWorld but with cell coords.",
   TracerSet: "Set any Tracer parameter at runtime (angle, distance, boxThickness, pivotX, pivotY, shape, triggerMode, triggerSignal, intervalSec, signalCount, signalLoop, signalLifetimeSec, damage, knockbackX, knockbackY, tagFilter, multiHit, debugDraw). componentName picks WHICH tracer when the host has multiple; blank = first attached.",
@@ -880,7 +898,7 @@ export const ACTION_DEFAULTS: Record<StateActionKind, Record<string, unknown>> =
   SetVelocityY: { vy: 0 },
   MoveTo: { x: "", y: "", speed: 120, stopRadius: 4 },
   MoveStop: {},
-  EmitSignal: { name: "MySignal" },
+  EmitSignal: { signal: "" },
   Destroy: { persist: false },
   SetGlobal: { global: "", value: 0 },
   AddGlobal: { global: "", delta: 1 },
@@ -910,6 +928,11 @@ export const ACTION_DEFAULTS: Record<StateActionKind, Record<string, unknown>> =
     // center when empty or the point isn't on the frame.
     spawnImagePoint: "",
     ovrMode: 0,             mode: "straight",
+    // Manual fixed direction in degrees, authored for facing RIGHT (0 = right,
+    // 90 = down, -90 = up, ±45 / ±135 = diagonals). Mirrors with the sprite's
+    // facing, so a left-facing NPC fires the flipped angle. Overrides facing/
+    // homing/aimed — the top-down "fire up / down / into a corner" knob.
+    ovrAngle: 0,            angle: 0,
     ovrSpeed: 0,            speed: 600,
     ovrLifetime: 0,         lifetime: 3,
     ovrGravityX: 0,         gravityX: 0,
@@ -1059,6 +1082,8 @@ export const ACTION_DEFAULTS: Record<StateActionKind, Record<string, unknown>> =
   TweenPauseAll: {},
   TweenResume: { tag: "" },
   TweenResumeAll: {},
+  TweenVar: { varName: "", fromVal: 0, toVal: 5, duration: 1, ease: "Linear", tweenTag: "", repeat: 0, yoyo: 0 },
+  TweenParam: { behavior: "LightSource", param: "radius", componentName: "", fromVal: 0, toVal: 200, duration: 1, ease: "Linear", tweenTag: "", repeat: 0, yoyo: 0 },
   PlayDialogue: { dialogueId: "" },
   StopDialogue: {},
   PlayMusic: { sound: "", volume: 1, loop: true, fadeSec: 0 },
@@ -1096,11 +1121,13 @@ export const ACTION_DEFAULTS: Record<StateActionKind, Record<string, unknown>> =
   QuitGame: {},
   BlurScene: { strength: 4 },
   SetScreenEffect: { effect: "grayscale", intensity: 1, target: "screen", layer: "" },
+  SetAmbientLight: { amount: 0.7, color: 0x0a0a1a },
   SetAngle: { angle: 0 },
   SetScale: { scale: 1 },
   SetScaleX: { scaleX: 1 },
   SetScaleY: { scaleY: 1 },
   SetOpacity: { alpha: 1 },
+  SetVisible: { mode: "set", visible: 1 },
   MoveToLayer: { layer: "" },
   SetZOrder: { depth: 0 },
   SetCursor: { style: "default" },
@@ -1116,6 +1143,8 @@ export const ACTION_DEFAULTS: Record<StateActionKind, Record<string, unknown>> =
   RemoveTilesInTracer: { tilemap: "", layer: "", tracer: "" },
   FillTilesInTracer: { tilemap: "", layer: "", tracer: "", tile: 0 },
   PlaceBigTile: { tilemap: "", layer: "", bigTileId: "", c: 0, r: 0 },
+  PlaceBigTileAtWorld: { tilemap: "", layer: "", bigTileId: "", x: 0, y: 0 },
+  PlaceAnimatedTileAtWorld: { tilemap: "", layer: "", animatedTileId: "", x: 0, y: 0 },
   RemoveBigTileAtWorld: { tilemap: "", layer: "", x: 0, y: 0 },
   RemoveBigTileAt: { tilemap: "", layer: "", c: 0, r: 0 },
   TracerSet: { componentName: "", param: "angle", value: 0 },

@@ -9,6 +9,10 @@ import type { Text } from "./behaviors/Text";
 import type { Camera } from "./behaviors/Camera";
 import type { Tracer } from "./behaviors/Tracer";
 import type { SquashStretch } from "./behaviors/SquashStretch";
+import type { Outline } from "./behaviors/Outline";
+import type { Shadow } from "./behaviors/Shadow";
+import type { LightSource } from "./behaviors/LightSource";
+import type { Weather } from "./behaviors/Weather";
 import type { UIWidgetRenderer } from "./behaviors/UIWidgetRenderer";
 import type { ParticleEmitter } from "./behaviors/ParticleEmitter";
 import type { Damageable } from "./behaviors/Damageable";
@@ -63,6 +67,10 @@ export interface BehaviorKindMap {
   TiledBackground: TiledBackground;
   WeaponSlot: WeaponSlot;
   Dismemberment: Dismemberment;
+  Outline: Outline;
+  Shadow: Shadow;
+  LightSource: LightSource;
+  Weather: Weather;
 }
 
 /**
@@ -133,6 +141,22 @@ export const BEHAVIOR_WRITABLE_PARAMS: Record<keyof BehaviorKindMap, ReadonlySet
   ]),
   SquashStretch: new Set<string>([
     "intensity", "duration", "easing", "emitOnEnd",
+  ]),
+  Outline: new Set<string>([
+    "on", "color", "thickness", "opacity", "pulse", "pulseSpeed",
+    "glow", "glowColor", "glowSize", "glowOpacity", "feather",
+  ]),
+  Shadow: new Set<string>([
+    "on", "shape", "width", "height", "feather", "opacity", "color",
+    "offsetX", "offsetY", "groundTag", "maxDrop", "shrinkWithHeight",
+  ]),
+  LightSource: new Set<string>([
+    "on", "color", "radius", "intensity", "edge", "feather", "edgeAmount", "offsetX", "offsetY", "flicker", "flickerSpeed",
+  ]),
+  Weather: new Set<string>([
+    "on", "space", "mode", "killTags", "shelterTags", "shelterDrizzleTags", "count", "speed", "speedJitter", "angle", "wind", "rotationSpeed",
+    "shape", "size", "sizeJitter", "thickness", "color", "alpha", "sway", "swaySpeed", "spriteId",
+    "splash", "splashType", "splashSprite", "splashAnim", "splashScale",
   ]),
   ParticleEmitter: new Set<string>([
     "name",
@@ -305,6 +329,13 @@ export abstract class Behavior {
   update(_delta: number): void {}
   /** Optional cleanup hook fired when the host Sprite is destroyed. */
   onDestroy(): void {}
+
+  /** Optional hook fired when a pooled host is reactivated for reuse. The
+   *  Sprite already wipes per-event state / queues / tweens / bus via
+   *  clearRuntimeState(); this is for behavior-internal runtime fields that
+   *  would otherwise leak from the previous life (jump/dash counters, the
+   *  active state-machine state, in-flight flags). Default: no-op. */
+  resetForPool(): void {}
 
   /**
    * Optional save hook. Return a JSON-serializable object capturing the

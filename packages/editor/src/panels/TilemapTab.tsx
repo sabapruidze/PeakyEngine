@@ -133,6 +133,9 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // flipY, bits2-3 rotation (0-3 × 90° CW). Z rotates, X/Y flip.
   const [brushXf, setBrushXf] = useState(0);
   const [zoom, setZoom] = useState(1);
+  // Palette (tile-picker) zoom. 1 = fit-to-sidebar; higher enlarges + scrolls so
+  // fine tiles are pickable on big sheets. Separate from the map-canvas `zoom`.
+  const [paletteZoom, setPaletteZoom] = useState(1);
   // Editor-only animation preview. Off = animated tiles freeze on frame 0 and
   // the 6fps redraw stops entirely — useful on big maps where the preview costs.
   const [previewAnim, setPreviewAnim] = useState(true);
@@ -1244,13 +1247,25 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             DRAG to select a multi-tile group (brush stamps the whole group). */}
         {tileset && tilesetImageUrl && tileset.cols > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-            <span style={LBL}>Palette (click or drag)</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ ...LBL, flex: 1 }}>Palette (click or drag)</span>
+              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{Math.round(paletteZoom * 100)}%</span>
+              {(() => {
+                const zbtn: React.CSSProperties = { padding: "1px 7px", fontSize: 12, background: "var(--inner)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
+                return (<>
+                  <button onClick={() => setPaletteZoom((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))} style={zbtn}>−</button>
+                  <button onClick={() => setPaletteZoom((z) => Math.min(8, +(z + 0.25).toFixed(2)))} style={zbtn}>+</button>
+                  <button onClick={() => setPaletteZoom(1)} title="Fit to sidebar" style={{ ...zbtn, fontSize: 10 }}>fit</button>
+                </>);
+              })()}
+            </div>
             <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
               {selW === 1 && selH === 1
                 ? `Brush: tile ${activeFirstgid + selR0 * tilesetCols + selC0}`
                 : `Brush: ${selW}×${selH} tiles`}
             </div>
             <Palette
+              zoom={paletteZoom}
               image={tilesetImageUrl}
               sheetW={tileset.sheetW}
               sheetH={tileset.sheetH}
@@ -1374,6 +1389,10 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             eraseSize={eraseSize}
             selW={selW}
             selH={selH}
+            selC0={selC0}
+            selR0={selR0}
+            activeFirstgid={activeFirstgid}
+            brushXf={brushXf}
             panning={panning}
             onDown={onCanvasDown}
             onMove={onCanvasMove}
@@ -1491,8 +1510,10 @@ function AnimatedTilePaletteButton({
  *  a 1×1 selection (same as the old single-pick behavior). */
 function Palette({
   image, sheetW, sheetH, cols, rows, tileW, tileH, offsetX, offsetY, spacingX, spacingY, selection, onSelectionChange,
-  poolMembers, onPoolToggle,
+  poolMembers, onPoolToggle, zoom = 1,
 }: {
+  /** Display zoom. 1 = fit the sidebar width; >1 enlarges (parent scrolls). */
+  zoom?: number;
   image: string; sheetW: number; sheetH: number;
   cols: number; rows: number;
   tileW: number; tileH: number;
@@ -1627,23 +1648,26 @@ function Palette({
   // crisp; the visible scale-up happens at the CSS layer. The click
   // handler reads the LIVE bounding rect to map clicks correctly even
   // when the visible scale differs from the draw-time scale.
+  // Wrapped in a scroll box: at zoom 1 the canvas is 100% (fits the sidebar);
+  // higher zoom widens it past the box so it scrolls. Width drives the visible
+  // scale; height stays auto (intrinsic aspect). cellAt reads the live rect, so
+  // clicks map correctly at any zoom.
   return (
-    <canvas
-      ref={canvasRef}
-      onMouseDown={onMouseDown}
-      style={{
-        display: "block", cursor: "crosshair",
-        // Pixel-art projects (sampling "nearest") want crisp blocks; smooth
-        // projects want the browser's quality downscale so HD tiles aren't
-        // forced into a blocky look.
-        imageRendering: smooth ? "auto" : "pixelated",
-        outline: "1px solid var(--border)",
-        // height auto-derives from the canvas's intrinsic aspect ratio when
-        // width is set by the parent stretch — explicit "auto" makes that
-        // explicit so we never get an unexpected square box.
-        height: "auto",
-      }}
-    />
+    <div style={{ overflow: "auto", maxHeight: 360, border: "1px solid var(--border)" }}>
+      <canvas
+        ref={canvasRef}
+        onMouseDown={onMouseDown}
+        style={{
+          display: "block", cursor: "crosshair",
+          width: `${zoom * 100}%`,
+          // Pixel-art projects (sampling "nearest") want crisp blocks; smooth
+          // projects want the browser's quality downscale so HD tiles aren't
+          // forced into a blocky look.
+          imageRendering: smooth ? "auto" : "pixelated",
+          height: "auto",
+        }}
+      />
+    </div>
   );
 }
 
@@ -1668,7 +1692,7 @@ interface PaintSlot {
 
 function PaintCanvas({
   layers, slots, cols, rows, tileW, tileH, zoom, tool, rectDrag, activeLayerId, hoverBigTile,
-  hoverAnimTileId, previewAnim = true, eraseSize = 1, selW, selH, panning,
+  hoverAnimTileId, previewAnim = true, eraseSize = 1, selW, selH, selC0 = 0, selR0 = 0, activeFirstgid = 0, brushXf = 0, panning,
   onDown, onMove, onUp,
 }: {
   layers: {
@@ -1693,6 +1717,9 @@ function PaintCanvas({
   previewAnim?: boolean;
   eraseSize?: number;
   selW: number; selH: number;
+  /** Selection origin + active tileset + transform — drives the ghost preview
+   *  that shows the ACTUAL selected tile(s) (flipped/rotated) under the cursor. */
+  selC0?: number; selR0?: number; activeFirstgid?: number; brushXf?: number;
   panning: boolean;
   onDown: (col: number, row: number, e: React.MouseEvent) => void;
   onMove: (col: number, row: number) => void;
@@ -1981,29 +2008,49 @@ function PaintCanvas({
       ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
     }
 
-    // Hover-cell preview — shows where brush/erase/rect would land. Skipped
-    // for bucket (whole regions) and picker (no destination cell). When a
-    // BigTile is selected, the dedicated hoverBigTile overlay above covers it.
-    if (
-      hoverCell && !hoverBigTile && !hoverAnimTileId && !rectDrag &&
-      (tool === "brush" || tool === "erase" || tool === "rect")
-    ) {
-      // Brush honors multi-tile selection; erase previews its N×N footprint
-      // (centered); rect previews a single cell (extent unknown until drag).
-      const previewW = tool === "brush" ? Math.max(1, selW) : tool === "erase" ? Math.max(1, eraseSize) : 1;
-      const previewH = tool === "brush" ? Math.max(1, selH) : tool === "erase" ? Math.max(1, eraseSize) : 1;
+    // Hover preview. Brush → draw the ACTUAL selected tile(s), flipped/rotated
+    // per brushXf, so you see exactly what lands. Erase/rect → a footprint box.
+    // Bucket/picker → nothing. BigTile / animated hovers are drawn above.
+    if (hoverCell && !hoverBigTile && !hoverAnimTileId && !rectDrag && tool === "brush" && selW > 0 && selH > 0) {
+      const aslot = slots.find((s) => s.firstgid === activeFirstgid) ?? slots[0];
+      const aimg = aslot ? imgsRef.current.get(aslot.ts.id) : undefined;
+      const tw = tileW * zoom, th = tileH * zoom;
+      const { outW, outH, cells } = transformedSelection(selW, selH, brushXf);
+      if (aslot && aimg && aimg.complete) {
+        const pts = aslot.ts;
+        const fx = (brushXf & 1) !== 0, fy = (brushXf & 2) !== 0, rot = (brushXf >> 2) & 3;
+        ctx.globalAlpha = 0.6;
+        for (const cell of cells) {
+          const sx = pts.offsetX + (selC0 + cell.sc) * (pts.tileW + pts.spacingX);
+          const sy = pts.offsetY + (selR0 + cell.sr) * (pts.tileH + pts.spacingY);
+          const dx = (hoverCell.col + cell.ox) * tw;
+          const dy = (hoverCell.row + cell.oy) * th;
+          ctx.save();
+          ctx.translate(dx + tw / 2, dy + th / 2);
+          if (rot) ctx.rotate((rot * Math.PI) / 2);
+          ctx.scale(fx ? -1 : 1, fy ? -1 : 1);
+          ctx.drawImage(aimg, sx, sy, pts.tileW, pts.tileH, -tw / 2, -th / 2, tw, th);
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
+      }
+      ctx.strokeStyle = "rgba(255,210,60,0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(hoverCell.col * tw + 0.75, hoverCell.row * th + 0.75, outW * tw - 1.5, outH * th - 1.5);
+    } else if (hoverCell && !hoverBigTile && !hoverAnimTileId && !rectDrag && (tool === "erase" || tool === "rect")) {
+      const previewW = tool === "erase" ? Math.max(1, eraseSize) : 1;
+      const previewH = tool === "erase" ? Math.max(1, eraseSize) : 1;
       const half = tool === "erase" ? Math.floor((eraseSize - 1) / 2) : 0;
       const dx = (hoverCell.col - half) * tileW * zoom;
       const dy = (hoverCell.row - half) * tileH * zoom;
-      const dw = previewW * tileW * zoom;
-      const dh = previewH * tileH * zoom;
+      const dw = previewW * tileW * zoom, dh = previewH * tileH * zoom;
       ctx.fillStyle = "rgba(255,210,60,0.10)";
       ctx.fillRect(dx, dy, dw, dh);
       ctx.strokeStyle = "rgba(255,255,255,0.5)";
       ctx.lineWidth = 1;
       ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
     }
-  }, [layers, slots, cols, rows, tileW, tileH, zoom, rectDrag, imgTick, activeLayerId, hoverBigTile, hoverAnimTileId, hoverCell, tool, selW, selH, eraseSize, animTick, previewAnim]);
+  }, [layers, slots, cols, rows, tileW, tileH, zoom, rectDrag, imgTick, activeLayerId, hoverBigTile, hoverAnimTileId, hoverCell, tool, selW, selH, selC0, selR0, activeFirstgid, brushXf, eraseSize, animTick, previewAnim]);
 
   // Animated tiles are now drawn interleaved by z in the MAIN composite (so they
   // stack correctly under higher layers). This overlay canvas is kept cleared/

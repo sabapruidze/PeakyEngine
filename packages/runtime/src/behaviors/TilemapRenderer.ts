@@ -258,7 +258,7 @@ export class TilemapRenderer extends Behavior {
    *  for multi-tileset maps: it points the BigTile composite at its OWNING
    *  tileset's source atlas (the combined runtime texture is reflowed, so the
    *  BigTile's contiguous region only exists in the original sheet). */
-  bigTiles: Record<string, { id: string; c: number; r: number; w: number; h: number; pivotX?: number; pivotY?: number; sortY?: number; sortLineY?: number; collide?: { cx: number; cy: number; cw: number; ch: number }; collidePoly?: { points: { x: number; y: number }[] }; solid?: boolean; tags?: string[]; excludedTags?: string[]; onBelowRemoved?: "destroy" | "drop"; cells?: { c: number; r: number }[]; hardness?: number | string; damageRect?: { cx: number; cy: number; cw: number; ch: number }; drops?: { bp: string; min: number; max: number; chance: number; instanceName?: string; animation?: string; frame?: number; vars?: Record<string, string | number | boolean> }[]; dropLayer?: string; destroyOnDepleted?: boolean; signalOnHit?: string; signalOnMine?: string; _src?: BigTileSrc }> = {};
+  bigTiles: Record<string, { id: string; name?: string; c: number; r: number; w: number; h: number; pivotX?: number; pivotY?: number; sortY?: number; sortLineY?: number; collide?: { cx: number; cy: number; cw: number; ch: number }; collidePoly?: { points: { x: number; y: number }[] }; solid?: boolean; tags?: string[]; excludedTags?: string[]; onBelowRemoved?: "destroy" | "drop"; cells?: { c: number; r: number }[]; hardness?: number | string; damageRect?: { cx: number; cy: number; cw: number; ch: number }; drops?: { bp: string; min: number; max: number; chance: number; instanceName?: string; animation?: string; frame?: number; vars?: Record<string, string | number | boolean> }[]; dropLayer?: string; destroyOnDepleted?: boolean; signalOnHit?: string; signalOnMine?: string; _src?: BigTileSrc }> = {};
   /** Tileset animated-tile definitions — cycling frame composites keyed by id. */
   animatedTiles: Record<string, AnimatedTileDefRuntime> = {};
   /** Ordered tileset slots (primary + extras) with firstgids + atlas geometry.
@@ -284,6 +284,12 @@ export class TilemapRenderer extends Behavior {
   // across versions. Per-layer-tilemap is bulletproof: feed `data` directly
   // and let Phaser do its standard layer init.
   private maps: Phaser.Tilemaps.Tilemap[] = [];
+  /** True once `_init` has actually built this map's visuals (or determined it
+   *  has nothing to draw). The scene-ready gate (peaky:sceneReady) waits on
+   *  every renderer's `rendered` so the loader only reveals a fully-painted
+   *  scene — a map that deferred on a missing texture keeps this false until its
+   *  retry re-runs `_init`. */
+  rendered = false;
   private phaserLayers: Phaser.Tilemaps.TilemapLayer[] = [];
   /** Per-Phaser-layer depth offset (added on top of _layerBaseDepth in
    *  applyLayer). For non-Y-sort layers this is L.z × 0.01. */
@@ -410,6 +416,78 @@ export class TilemapRenderer extends Behavior {
       // _init's first few lines, so the rest of the scene continues normally.
       console.error("TilemapRenderer init failed:", err);
     }
+    // Snapshot the AUTHORED tile grids so serialize() can diff the runtime edits
+    // (mined / placed tiles) for save/load + level persistence. setTileAt mutates
+    // L.tiles in place, so this copy is the immutable baseline.
+    this._authoredTiles = {};
+    for (const L of this.layers) this._authoredTiles[L.id] = [...(L.tiles ?? [])];
+  }
+
+  /** Authored tile grids per layer, captured at init — baseline for the
+   *  serialize() diff. See serialize/deserialize. */
+  private _authoredTiles?: Record<string, number[]>;
+
+  /** Save the runtime tilemap edits: mined/placed regular tiles (diff vs
+   *  authored), ALL current BigTile + animated placements, and partial-damage
+   *  HP. Returns undefined when nothing changed so the save stays lean. The host
+   *  sprite is in peaky.sprites with a stable instanceId, so SaveSlot/LoadSlot
+   *  call these automatically; level changes route through the same payload via
+   *  PersistentState. */
+  serialize(): Record<string, unknown> | undefined {
+    const tiles: { l: string; c: number; r: number; i: number }[] = [];
+    if (this._authoredTiles) {
+      for (const L of this.layers) {
+        const auth = this._authoredTiles[L.id];
+        if (!auth) continue;
+        const n = Math.max(L.tiles.length, auth.length);
+        for (let i = 0; i < n; i++) {
+          const cur = L.tiles[i] ?? -1;
+          if (cur !== (auth[i] ?? -1)) tiles.push({ l: L.id, c: i % this.cols, r: Math.floor(i / this.cols), i: cur });
+        }
+      }
+    }
+    const big: { l: string; b: string; c: number; r: number }[] = [];
+    const anim: { l: string; a: string; c: number; r: number }[] = [];
+    for (const L of this.layers) {
+      for (const p of L.bigTilePlacements ?? []) big.push({ l: L.id, b: p.bigTileId, c: p.c, r: p.r });
+      for (const p of L.animatedTilePlacements ?? []) anim.push({ l: L.id, a: p.animatedTileId, c: p.c, r: p.r });
+    }
+    const myLayers = new Set(this.layers.map((L) => L.id));
+    const hpMap = this.sprite.scene?.data?.get("peaky.tileHP") as Map<string, number> | undefined;
+    const hp: Record<string, number> = {};
+    if (hpMap) for (const [k, v] of hpMap) { if (myLayers.has(k.split("#")[0])) hp[k] = v; }
+    if (tiles.length === 0 && big.length === 0 && anim.length === 0 && Object.keys(hp).length === 0) return undefined;
+    return { tiles, big, anim, hp };
+  }
+
+  /** Restore tilemap edits onto a freshly-built (authored) map: clear ALL current
+   *  placements (the save is the source of truth), re-apply tile edits, re-place
+   *  BigTile + animated tiles, restore HP. */
+  deserialize(state: Record<string, unknown>): void {
+    const s = state as {
+      tiles?: { l: string; c: number; r: number; i: number }[];
+      big?: { l: string; b: string; c: number; r: number }[];
+      anim?: { l: string; a: string; c: number; r: number }[];
+      hp?: Record<string, number>;
+    };
+    for (const L of this.layers) {
+      for (const p of [...(L.bigTilePlacements ?? [])]) this._destroyBigTilePlacement(L, p.id);
+      for (const p of [...(L.animatedTilePlacements ?? [])]) this._destroyAnimatedPlacement(L.id, p.id);
+      // Reset the records directly too: when _init deferred (tileset texture not
+      // loaded yet), _destroyBigTilePlacement no-ops on resources that don't
+      // exist and leaves the authored records in place — so the later deferred
+      // _init would spawn them AGAIN on top of the ones we re-place below.
+      L.bigTilePlacements = [];
+      L.animatedTilePlacements = [];
+    }
+    for (const t of s.tiles ?? []) this.setTileAt(t.l, t.c, t.r, t.i);
+    for (const b of s.big ?? []) this.placeBigTile(b.l, b.b, b.c, b.r);
+    for (const a of s.anim ?? []) this.placeAnimatedTile(a.l, a.a, a.c, a.r);
+    if (s.hp) {
+      let hpMap = this.sprite.scene?.data?.get("peaky.tileHP") as Map<string, number> | undefined;
+      if (!hpMap && this.sprite.scene) { hpMap = new Map<string, number>(); this.sprite.scene.data.set("peaky.tileHP", hpMap); }
+      if (hpMap) for (const [k, v] of Object.entries(s.hp)) hpMap.set(k, v);
+    }
   }
 
   private _init(): void {
@@ -449,7 +527,7 @@ export class TilemapRenderer extends Behavior {
     // setTileAt + the init spawn re-decompose against the live config.
     this._polyRectCache.clear();
 
-    if (this.cols <= 0 || this.rows <= 0 || !Array.isArray(this.layers) || this.layers.length === 0) return;
+    if (this.cols <= 0 || this.rows <= 0 || !Array.isArray(this.layers) || this.layers.length === 0) { this.rendered = true; return; }
 
     // Multi-tileset: reflow every source atlas into ONE combined texture so the
     // rest of the pipeline (frame math, collision, Phaser layers) stays single-
@@ -926,6 +1004,7 @@ export class TilemapRenderer extends Behavior {
         s._colliders.push(c);
       }
     }
+    this.rendered = true;
   }
 
   /**
@@ -947,11 +1026,17 @@ export class TilemapRenderer extends Behavior {
     const cam = this.sprite.scene?.cameras?.main;
     if (!cam) return;
     const v = cam.worldView;
-    const padX = v.width * 0.1 + this.tileW * 4;
-    const padY = v.height * 0.1 + this.tileH * 4;
+    const padX = v.width * 0.1 + this.tileW;
+    const padY = v.height * 0.1 + this.tileH;
     const minX = v.x - padX, maxX = v.right + padX, minY = v.y - padY, maxY = v.bottom + padY;
+    // Test the image's actual FOOTPRINT (origin + display size), not just its
+    // anchor point — otherwise a BigTile larger than the pad (a whole building)
+    // pops out the instant its anchor leaves the view while most of it is still
+    // on screen. displayWidth/Height fold in scale; originX/Y handle any pivot.
     const cull = (img: Phaser.GameObjects.Image): boolean => {
-      const on = img.x >= minX && img.x <= maxX && img.y >= minY && img.y <= maxY;
+      const left = img.x - img.displayWidth * img.originX;
+      const top = img.y - img.displayHeight * img.originY;
+      const on = left + img.displayWidth >= minX && left <= maxX && top + img.displayHeight >= minY && top <= maxY;
       const inList = img.displayList != null;
       if (on && !inList) img.addToDisplayList();
       else if (!on && inList) img.removeFromDisplayList();
@@ -2172,7 +2257,13 @@ export class TilemapRenderer extends Behavior {
   placeBigTile(layerId: string, bigTileId: string, c: number, r: number): string | null {
     const L = this.findLayer(layerId);
     if (!L) return null;
-    const bt = this.bigTiles[bigTileId];
+    // Accept a BigTile NAME as well as an id, so authors (and `var:` values)
+    // can identify it by its readable name.
+    let bt = this.bigTiles[bigTileId];
+    if (!bt) {
+      const byName = Object.values(this.bigTiles).find((b) => b.name === bigTileId);
+      if (byName) bt = byName;
+    }
     if (!bt) return null;
     if (c < 0 || r < 0 || c + bt.w > this.cols || r + bt.h > this.rows) return null;
     // Destroy any existing placement whose footprint intersects the new one
@@ -2189,7 +2280,7 @@ export class TilemapRenderer extends Behavior {
     }
     for (const id of collidingIds) this._destroyBigTilePlacement(L, id);
     const id = `bp_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
-    const placement = { id, bigTileId, c, r };
+    const placement = { id, bigTileId: bt.id, c, r };
     if (!L.bigTilePlacements) L.bigTilePlacements = [];
     L.bigTilePlacements.push(placement);
     this._spawnBigTilePlacement(L, placement);
@@ -2305,7 +2396,13 @@ export class TilemapRenderer extends Behavior {
   placeAnimatedTile(layerId: string, animatedTileId: string, c: number, r: number): string | null {
     const L = this.layers.find((x) => x.id === layerId);
     if (!L) return null;
-    const def = this.animatedTiles[animatedTileId];
+    // Accept an animated-tile NAME as well as an id, so authors (and runtime
+    // `var:` expressions) can identify tiles by their readable name.
+    let def = this.animatedTiles[animatedTileId];
+    if (!def) {
+      const byName = Object.values(this.animatedTiles).find((d) => d.name === animatedTileId);
+      if (byName) def = byName;
+    }
     if (!def) return null;
     if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) return null;
     // Destroy any existing animated placement at this exact cell — single
@@ -2317,7 +2414,7 @@ export class TilemapRenderer extends Behavior {
     // games (≈36^7 ≈ 7.8e10, so ~280k placements gives 50% chance of one
     // collision — way too few for a real save).
     const id = `ap_${Date.now().toString(36)}_${(this._nextAnimatedId++).toString(36)}`;
-    const placement = { id, animatedTileId, c, r };
+    const placement = { id, animatedTileId: def.id, c, r };
     if (!L.animatedTilePlacements) L.animatedTilePlacements = [];
     L.animatedTilePlacements.push(placement);
     this._spawnAnimatedTilePlacement(L, placement);
@@ -3041,7 +3138,7 @@ function spansEqual(a: { x: number; w: number }[] | undefined, b: { x: number; w
 function ensureBigTileFrames(
   scene: Phaser.Scene,
   textureKey: string,
-  bigTiles: Record<string, { id: string; c: number; r: number; w: number; h: number; cells?: { c: number; r: number }[]; _src?: BigTileSrc }>,
+  bigTiles: Record<string, { id: string; name?: string; c: number; r: number; w: number; h: number; cells?: { c: number; r: number }[]; _src?: BigTileSrc }>,
   tileW: number, tileH: number,
   marginX: number, marginY: number,
   spacingX: number, spacingY: number,

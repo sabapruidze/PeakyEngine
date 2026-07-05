@@ -375,6 +375,7 @@ export const SYSTEM_ACTION_KINDS: StateActionKind[] = [
   "QuitGame",
   // Screen post-FX (world / main camera; UI stays crisp)
   "SetScreenEffect",
+  "SetAmbientLight",
   // Tilemap (Tier 1 read/write — tilemap is named by parameter, runs from any subject)
   "SetTile",
   "RemoveTile",
@@ -385,6 +386,7 @@ export const SYSTEM_ACTION_KINDS: StateActionKind[] = [
   "RemoveTilesInTracer",
   "FillTilesInTracer",
   "PlaceBigTile",
+  "PlaceBigTileAtWorld",
   "RemoveBigTileAtWorld",
   "RemoveBigTileAt",
   "DamageTile",
@@ -393,6 +395,7 @@ export const SYSTEM_ACTION_KINDS: StateActionKind[] = [
   "RestoreTileHP",
   "PlayTileAnimation",
   "PlayTileAnimationAtWorld",
+  "PlaceAnimatedTileAtWorld",
   "StopTileAnimation",
   "StopTileAnimationAtWorld",
   "PlayAllTileAnimations",
@@ -472,6 +475,7 @@ export const BP_ACTION_KINDS: StateActionKind[] = [
   "SetScaleX",
   "SetScaleY",
   "SetOpacity",
+  "SetVisible",
   "MoveToLayer",
   "SetZOrder",
   // Velocity (CharacterMovement / arcade body)
@@ -537,6 +541,8 @@ export const BP_ACTION_KINDS: StateActionKind[] = [
   "TweenPauseAll",
   "TweenResume",
   "TweenResumeAll",
+  "TweenVar",
+  "TweenParam",
   // Camera (gated hasCamera — only Camera BP has the behavior)
   "ScrollToObject",
   "ScrollToPosition",
@@ -557,6 +563,7 @@ export const BP_ACTION_KINDS: StateActionKind[] = [
   "CameraPanTo",
   "CameraPanToTag",
   "BlurScene",
+  "SetAmbientLight",
   // Tilemap (tilemap parameter chooses the target; available on every BP)
   "SetTile",
   "RemoveTile",
@@ -567,6 +574,7 @@ export const BP_ACTION_KINDS: StateActionKind[] = [
   "RemoveTilesInTracer",
   "FillTilesInTracer",
   "PlaceBigTile",
+  "PlaceBigTileAtWorld",
   "RemoveBigTileAtWorld",
   "RemoveBigTileAt",
   "DamageTile",
@@ -575,6 +583,7 @@ export const BP_ACTION_KINDS: StateActionKind[] = [
   "RestoreTileHP",
   "PlayTileAnimation",
   "PlayTileAnimationAtWorld",
+  "PlaceAnimatedTileAtWorld",
   "StopTileAnimation",
   "StopTileAnimationAtWorld",
   "PlayAllTileAnimations",

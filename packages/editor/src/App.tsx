@@ -17,6 +17,7 @@ import { StatusBar } from "./panels/StatusBar";
 import { Splitter } from "./panels/Splitter";
 import { SaveStatusBanner } from "./components/SaveStatusBanner";
 import { FontsPanel } from "./panels/FontsPanel";
+import { AssistantModal } from "./panels/AssistantModal";
 import { registerProjectFonts } from "./fontRegistry";
 
 const CB_HEIGHT_KEY = "peaky.cb-height";
@@ -48,6 +49,7 @@ export function App() {
   const [inputActionsOpen, setInputActionsOpen] = useState(false);
   const [fontsOpen, setFontsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [cbHeight, setCbHeight] = useState(loadCbHeight);
   const fonts = useEditor((s) => s.project.fonts);
 
@@ -116,9 +118,28 @@ export function App() {
         padding: 14,
         height: "100vh",
         background: "var(--frame)",
+        // Cap the app at the viewport. The 1fr column + its descendants all
+        // carry minWidth:0 so a wide tab bar / content grid shrinks and
+        // scrolls/wraps INTERNALLY; overflow:hidden here is the final guard so
+        // the whole editor can never scroll horizontally.
+        minWidth: 0,
+        overflow: "hidden",
+        boxSizing: "border-box",
       }}
     >
       <SaveStatusBanner />
+      <AssistantModal open={assistantOpen} onClose={() => setAssistantOpen(false)} />
+      <button
+        onClick={() => setAssistantOpen(true)}
+        title="Build Assistant — describe a character, auto-build the Blueprint"
+        style={{
+          position: "fixed", right: 18, bottom: 18, zIndex: 9000,
+          height: 40, padding: "0 16px", borderRadius: 20,
+          background: "linear-gradient(135deg,#3a82e6,#6a4ae0)", color: "#fff",
+          border: "1px solid rgba(255,255,255,0.25)", boxShadow: "0 4px 16px rgba(0,0,0,0.45)",
+          cursor: "pointer", fontWeight: 700, fontSize: 13,
+        }}
+      >✨ Assistant</button>
       <LeftRail
         onOpenInputActions={() => setInputActionsOpen(true)}
         onOpenFonts={() => setFontsOpen(true)}
@@ -131,6 +152,11 @@ export function App() {
           gridTemplateRows: dockCollapsed ? "auto 1fr auto" : `auto 1fr ${cbHeight}px auto`,
           gap: 12,
           minHeight: 0,
+          // Without minWidth:0 this grid item defaults to min-width:auto and
+          // refuses to shrink below its content — a wide tab bar then grows the
+          // 1fr column and the whole editor scrolls horizontally. With it, the
+          // column holds and the TabBar wrapper's overflow:hidden can clip/scroll.
+          minWidth: 0,
         }}
       >
         <TopBar />

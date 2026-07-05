@@ -63,6 +63,8 @@ export function InstanceInspector() {
   const blueprintFor = useEditor((s) => s.blueprintFor);
   const uiWidgets = useEditor((s) => s.project.uiWidgets);
   const sprites = useEditor((s) => s.project.sprites);
+  const scenes = useEditor((s) => s.project.scenes);
+  const inputActions = useEditor((s) => s.project.inputActions);
   const update = useEditor((s) => s.updateInstance);
   const remove = useEditor((s) => s.removeInstance);
   const setInstanceLayer = useEditor((s) => s.setInstanceLayer);
@@ -609,7 +611,7 @@ export function InstanceInspector() {
         </div>
         <div className="field">
           <label>Scale X</label>
-          <input type="number" step={0.1} value={inst.scaleX ?? 1} onChange={(e) => updateAll({ scaleX: +e.target.value })} title="Visual scale. 1 = the BP's default size. Body collision size still comes from w/h." />
+          <input type="number" step={0.1} value={inst.scaleX ?? 1} onChange={(e) => updateAll({ scaleX: +e.target.value })} title="Visual scale. 1 = the BP's default size. The scene gizmo edits this same value. Body collision size stays the BP/Collider size." />
         </div>
         <div className="field">
           <label>Scale Y</label>
@@ -672,6 +674,99 @@ export function InstanceInspector() {
           />
         </div>
       </div>
+
+      {bp?.classKind === "Trigger" && (
+        <div className="section">
+          <div className="title">Door (scene link)</div>
+          <div style={{ padding: "0 12px 6px", fontSize: 10, color: "var(--text-dim)", lineHeight: 1.4 }}>
+            Give this door an <b>Entry name</b>, then set a <b>Destination scene</b> + <b>door</b> to send the traveler there. Leave the destination empty to keep it a plain trigger.
+          </div>
+          <div className="field">
+            <label title="This door's entry id — other doors target it as their Destination door. Also where a traveler arriving here lands.">Entry name</label>
+            <input value={inst.door?.name ?? ""} placeholder="e.g. east"
+              onChange={(e) => update(inst.id, { door: { ...inst.door, name: e.target.value } })} />
+          </div>
+          <div className="field">
+            <label title="Set to make this trigger a DOOR — the traveler is sent to this scene on entry.">Dest scene</label>
+            <select value={inst.door?.destSceneId ?? ""}
+              onChange={(e) => update(inst.id, { door: { ...inst.door, destSceneId: e.target.value || undefined } })}>
+              <option value="">— none (plain trigger) —</option>
+              {scenes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          {inst.door?.destSceneId && (
+            <>
+              <div className="field">
+                <label title="Which door in the destination scene to arrive on (its Entry name).">Dest door</label>
+                {(() => {
+                  const dest = scenes.find((s) => s.id === inst.door!.destSceneId);
+                  const names = (dest?.instances ?? []).map((i) => i.door?.name).filter((n): n is string => !!n);
+                  return names.length > 0 ? (
+                    <select value={inst.door?.destDoor ?? ""}
+                      onChange={(e) => update(inst.id, { door: { ...inst.door, destDoor: e.target.value } })}>
+                      <option value="">— pick door —</option>
+                      {names.map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input value={inst.door?.destDoor ?? ""} placeholder="door entry name"
+                      onChange={(e) => update(inst.id, { door: { ...inst.door, destDoor: e.target.value } })} />
+                  );
+                })()}
+              </div>
+              <div className="field">
+                <label title="Which sprite tag counts as the traveler that activates this door. Default: player.">Traveler tag</label>
+                <input value={inst.door?.travelerTag ?? ""} placeholder="player"
+                  onChange={(e) => update(inst.id, { door: { ...inst.door, travelerTag: e.target.value || undefined } })} />
+              </div>
+              <div className="field">
+                <label title="How the door fires: Instant = travel on touch; Delay = wait on it; Input = press a key.">Activation</label>
+                <select value={inst.door?.activation ?? "instant"}
+                  onChange={(e) => update(inst.id, { door: { ...inst.door, activation: e.target.value as "instant" | "delay" | "input" } })}>
+                  <option value="instant">Instant (on touch)</option>
+                  <option value="delay">After delay</option>
+                  <option value="input">On key press</option>
+                </select>
+              </div>
+              {inst.door?.activation === "delay" && (
+                <div className="field">
+                  <label title="Seconds the traveler must stand on the door before it travels.">Delay (sec)</label>
+                  <input type="number" step={0.1} min={0} value={inst.door?.delaySec ?? 1}
+                    onChange={(e) => update(inst.id, { door: { ...inst.door, delaySec: Math.max(0, +e.target.value) } })} />
+                </div>
+              )}
+              {inst.door?.activation === "input" && (
+                <div className="field">
+                  <label title="Input action the traveler presses (while on the door) to travel. Defined in the Input Actions editor.">Key action</label>
+                  {(inputActions ?? []).length > 0 ? (
+                    <select value={inst.door?.inputAction ?? ""}
+                      onChange={(e) => update(inst.id, { door: { ...inst.door, inputAction: e.target.value || undefined } })}>
+                      <option value="">— pick action —</option>
+                      {(inputActions ?? []).map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
+                    </select>
+                  ) : (
+                    <span style={{ fontSize: 10, color: "var(--orange)" }}>No input actions — add one in the Input Actions editor first.</span>
+                  )}
+                </div>
+              )}
+              <div className="field">
+                <label title="Use the loading-screen transition (holds a cover until the destination is fully built) instead of a plain cut.">Use loader</label>
+                <input type="checkbox" checked={!!inst.door?.withLoad}
+                  onChange={(e) => update(inst.id, { door: { ...inst.door, withLoad: e.target.checked || undefined } })} />
+              </div>
+              {inst.door?.withLoad && (
+                <div className="field">
+                  <label title="Which scene to show as the loading screen. Default = the project's Loading Scene setting.">Loader scene</label>
+                  <select value={inst.door?.loaderSceneId ?? ""}
+                    onChange={(e) => update(inst.id, { door: { ...inst.door, loaderSceneId: e.target.value || undefined } })}>
+                    <option value="">— project default —</option>
+                    {scenes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {bp && (
         <div className="section">

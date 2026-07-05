@@ -447,7 +447,15 @@ export function TilesetTab({ tilesetId }: { tilesetId: string }) {
                 <div key={bt.id} style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 10, padding: "3px 5px", background: "rgba(120,210,120,0.08)", border: "1px solid rgba(120,210,120,0.25)", borderRadius: 3 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <BigTilePreview ts={tileset} bt={bt} />
-                    <span style={{ flex: 1, color: "var(--text-dim)", fontSize: 9 }}>{bt.w}×{bt.h}</span>
+                    <input
+                      type="text"
+                      placeholder="name…"
+                      value={bt.name ?? ""}
+                      onChange={(e) => patchBigTile(tileset.id, bt.id, { name: e.target.value })}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      style={{ flex: 1, minWidth: 0, fontSize: 10, padding: "2px 4px", background: "var(--inner)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 2, color: "var(--text)" }}
+                    />
+                    <span style={{ color: "var(--text-dim)", fontSize: 9 }}>{bt.w}×{bt.h}</span>
                     <button onClick={() => removeBigTile(tileset.id, bt.id)} style={{ fontSize: 10, padding: "0 5px", cursor: "pointer", color: "var(--orange)", background: "transparent", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 2 }}>×</button>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto 1fr", gap: 4, alignItems: "center" }}>
@@ -970,8 +978,11 @@ function PolygonColliderEditor({
     }
     return { x: Math.round(Math.max(0, Math.min(tw, x))), y: Math.round(Math.max(0, Math.min(th, y))) };
   };
-  const PREVIEW = 160; // larger so dragging single pixels is feasible
-  const scale = PREVIEW / Math.max(tw, th);
+  const PREVIEW = 160; // base fit; the zoom multiplier below enlarges from here
+  // Zoom lets a BigTile's whole-building box (which fits tiny at 1×) be blown up
+  // so single pixels are draggable. The canvas grows and the wrapper scrolls.
+  const [pvZoom, setPvZoom] = useState(1);
+  const scale = (PREVIEW / Math.max(tw, th)) * pvZoom;
   const canvasRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<number | null>(null);
 
@@ -1084,7 +1095,14 @@ function PolygonColliderEditor({
       display: "flex", gap: 12, alignItems: "flex-start",
     }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={LBL}>{label}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ ...LBL, flex: 1 }}>{label}</span>
+          <span style={{ fontSize: 10, color: "var(--text-dim)" }}>Zoom {Math.round(pvZoom * 100)}%</span>
+          <button onClick={() => setPvZoom((z) => Math.max(0.5, +(z - 0.5).toFixed(2)))} style={{ ...BTN, padding: "1px 7px", fontSize: 12 }}>−</button>
+          <button onClick={() => setPvZoom((z) => Math.min(12, +(z + 0.5).toFixed(2)))} style={{ ...BTN, padding: "1px 7px", fontSize: 12 }}>+</button>
+          <button onClick={() => setPvZoom(1)} title="Reset zoom" style={{ ...BTN, padding: "1px 6px", fontSize: 10 }}>1×</button>
+        </div>
+        <div style={{ maxWidth: 380, maxHeight: 380, overflow: "auto", border: "1px solid var(--border)", background: "var(--inner)" }}>
         <div
           ref={canvasRef}
           onDoubleClick={onCanvasDoubleClick}
@@ -1092,8 +1110,6 @@ function PolygonColliderEditor({
           style={{
             position: "relative",
             width: W, height: H,
-            border: "1px solid var(--border)",
-            background: "var(--inner)",
             cursor: "crosshair",
             userSelect: "none",
           }}
@@ -1131,6 +1147,7 @@ function PolygonColliderEditor({
               />
             );
           })}
+        </div>
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>

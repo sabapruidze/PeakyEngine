@@ -325,6 +325,16 @@ export class Sprite {
    *  matches this id. Empty for runtime-spawned objects (CreateObject)
    *  that don't have a scene placement. */
   instanceId = "";
+  /** Stable id for a RUNTIME-spawned object (CreateObject), minted by
+   *  `nextSpawnId()` and stamped by the `peaky.spawn` callback. Empty for
+   *  authored placements (they use `instanceId`). SaveSlot records it +
+   *  `blueprintId`/`spawnLayerName` so LoadSlot can RECREATE the object (a
+   *  placed candle) instead of skipping it — authored instances are re-placed
+   *  by the scene, spawned ones are not, so without this they vanish on load. */
+  spawnId = "";
+  /** Layer NAME this object was spawned into (so a recreate on load lands on
+   *  the same layer). Empty = the scene's default/active layer at spawn. */
+  spawnLayerName = "";
   /** When non-empty, identifies this sprite's parent in a Stack-managed
    *  layout. Set on UI widget instances placed inside a Stack-bearing
    *  parent in the editor. Empty for top-level placements. */
@@ -407,17 +417,50 @@ export class Sprite {
       hide(this.gameObject);
       for (const go of this._fxObjects) hide(go);
     } else {
+      // Unculling reveals what cull hid — UNLESS the author hid the whole BP
+      // via SetVisible; then it must stay hidden.
+      const show = !this._manualHidden;
       for (const go of this._culledHidden) {
         const v = go as unknown as { setVisible?: (b: boolean) => void };
-        if (v && typeof v.setVisible === "function") v.setVisible(true);
+        if (v && typeof v.setVisible === "function") v.setVisible(show);
       }
       this._culledHidden.length = 0;
     }
   }
 
+  /** Author-driven whole-BP visibility (the SetVisible action). true = hidden.
+   *  Hides the host body AND every routed overlay (SpriteRenderer image, Text,
+   *  particles, tracer gfx…). Composes with the off-screen cull — unculling
+   *  won't reveal a manually-hidden BP. (Toggling a whole LAYER's visibility
+   *  re-applies per behavior and can override this; rare, acceptable for v1.) */
+  private _manualHidden = false;
+  get manualHidden(): boolean { return this._manualHidden; }
+  /** Author-driven whole-BP opacity multiplier (the SetOpacity action). The
+   *  overlays (SpriteRenderer image, Text) multiply their computed alpha by
+   *  this each tick, so SetOpacity fades the actual sprite — not just the
+   *  invisible host rect. 1 = fully opaque. */
+  manualAlpha = 1;
+  setManualHidden(hidden: boolean): void {
+    this._manualHidden = hidden;
+    // While culled off-screen, don't force-show — the cull owns visibility and
+    // its re-show path (above) already honors _manualHidden.
+    if (!hidden && this._culledHidden.length > 0) return;
+    const apply = (go: Phaser.GameObjects.GameObject | undefined) => {
+      const v = go as unknown as { setVisible?: (b: boolean) => void } | undefined;
+      if (v && typeof v.setVisible === "function") v.setVisible(!hidden);
+    };
+    apply(this.gameObject);
+    for (const go of this._fxObjects) apply(go);
+  }
+
   routeOverlayToCamera(go: Phaser.GameObjects.GameObject): void {
     if (!this.scene) return;
     this._fxObjects.add(go);
+    // Drop the reference when the overlay is destroyed, so transient/churning
+    // overlays (e.g. Weather splash pixels) don't accumulate dead entries in
+    // _fxObjects forever — which would grow unbounded and slow every overlay
+    // sweep (getOverlays / layer-FX hide) for this sprite's lifetime.
+    go.once("destroy", () => this._fxObjects.delete(go));
     // An active layer post-FX must reach overlays created AFTER it was set
     // (SpriteRenderer builds its image lazily on the first textured frame).
     // eval.ts registers this hook on scene.data when a layer effect is active.
@@ -495,6 +538,13 @@ export class Sprite {
    * + camera + conditions all mirror without breaking collisions.
    */
   facingScaleX = 1;
+
+  /** The "blueprint scale" baked from the instance w/h override (art + body are
+   *  sized by it, but gameObject.scaleX is NOT). Overlays that fold host scale
+   *  (Tracer reach, Shadow) multiply this by |gameObject.scaleX| to get the REAL
+   *  effective scale, so a bed shrunk to 0.6 shrinks its tracer too. Default 1. */
+  _renderScaleX = 1;
+  _renderScaleY = 1;
 
   /** Active "Move To" command — set by the MoveTo action, applied each tick in
    *  `tick()` (home toward the captured target at constant speed, stop within
@@ -798,6 +848,11 @@ export class Sprite {
    *  pool. Sprite.tick early-returns when pooled. Set true on destroy
    *  (when BP has poolSize > 0), false on pool-respawn. */
   _pooled = false;
+  /** Re-entrancy latch for destroy(). The OnDestroyed chain runs BEFORE
+   *  `destroyed` is set and before the pool check, so a chain that destroys
+   *  this sprite again (cascade / "OnDestroyed → Destroy") would re-fire
+   *  OnDestroyed and double-pool. Reset to false on pool-respawn. */
+  _destroying = false;
   /** Component-level LOD groups. Set by runProject from the BP's
    *  lodGroups field. Each group toggles `behavior.enabled` for its
    *  listed component kinds based on proximity to a tag-matched sprite.
@@ -1646,7 +1701,9 @@ export class Sprite {
         const wy = ptr.worldY ?? (ptr.y + cam.scrollY);
         const all = (this.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
         for (const s of all) {
-          if (s.destroyed || !s.body) continue;
+          // Pooled sprites are not `destroyed` and keep a (disabled) body at
+          // their stale death position — without this they'd match clicks.
+          if (s.destroyed || s._pooled || !s.body) continue;
           if (targetBpId && s.blueprintId !== targetBpId) continue;
           if (tags.length > 0 && !tags.some((t) => t && s.tags.has(t))) continue;
           const b = s.body;
@@ -1996,7 +2053,9 @@ export class Sprite {
         const all = (this.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
         let hit: Sprite | null = null;
         for (const s of all) {
-          if (s.destroyed || !s.body) continue;
+          // Pooled sprites are not `destroyed` and keep a (disabled) body at
+          // their stale death position — without this they'd match clicks.
+          if (s.destroyed || s._pooled || !s.body) continue;
           if (targetBpId && s.blueprintId !== targetBpId) continue;
           if (tags.length > 0 && !tags.some((t) => t && s.tags.has(t))) continue;
           const b = s.body;
@@ -2199,6 +2258,15 @@ export class Sprite {
     this.events.clearAll();
   }
 
+  /** Fire every behavior's resetForPool() hook. Called by the pool-reactivate
+   *  path (runProject) to clear behavior-internal runtime state that
+   *  clearRuntimeState() doesn't reach (jump/dash counters, active SM state). */
+  resetBehaviorsForPool(): void {
+    for (const b of this.behaviors) {
+      try { b.resetForPool(); } catch (e) { console.warn("[pool] resetForPool threw", e); }
+    }
+  }
+
   /** Run actions on every event whose trigger is `OnDestroyed`. Called by
    *  destroy() BEFORE the sprite is torn down, so action handlers can
    *  still read this sprite's position / vars / instance state. Wait /
@@ -2330,7 +2398,11 @@ export class Sprite {
   }
 
   destroy(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this._destroying) return;
+    // Latch BEFORE firing OnDestroyed: those chains run while `destroyed` is
+    // still false, so a re-entrant destroy() (cascade / self-destruct) would
+    // otherwise re-fire OnDestroyed and push this sprite into the pool twice.
+    this._destroying = true;
     // OnDestroyed trigger — fire BEFORE the sprite is torn down so
     // action handlers can still read self.x / vars / instance state.
     // Two paths fire:
@@ -2355,6 +2427,7 @@ export class Sprite {
         | ((s: Sprite) => boolean)
         | undefined;
       if (deact && deact(this)) {
+        this._destroying = false; // lives on in the pool — allow a future destroy
         return; // sprite is now in the pool, NOT destroyed
       }
     }

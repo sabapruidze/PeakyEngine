@@ -163,6 +163,30 @@ export class VisionMask extends Behavior {
       }
     }
 
+    // Sprite Objects (placed sprite assets — peaky.placementsBySpriteId). They
+    // live outside peaky.sprites, so without this a "black sprite" used as a
+    // darkness sheet would never get a hole cut through it. The per-object layer
+    // is carried on `peaky.soRuntime`/the placement's data for the cutoutLayers
+    // filter; falls back to all-layers-eligible when unknown.
+    const placements = scene.data.get("peaky.placementsBySpriteId") as Map<string, Phaser.GameObjects.GameObject[]> | undefined;
+    if (placements) {
+      for (const list of placements.values()) {
+        for (const go of list) {
+          if (!go.scene) continue;
+          seen.add(go);
+          // Per-object layer NAME — authored placements stamp peaky.soLayer
+          // (runProject), runtime CreateSpriteObject stamps peaky.soRuntime.layer.
+          // NOTE: call getData ON the object (bound `this`), not via an extracted
+          // reference — an unbound call throws inside Phaser's DataManager.
+          const meta = go.getData("peaky.soRuntime") as { layer?: string } | undefined;
+          const layerName = (go.getData("peaky.soLayer") as string | undefined) ?? meta?.layer;
+          const okLayer = layerNames.length === 0 || (!!layerName && layerNames.includes(layerName));
+          if (okLayer) this._applyMaskIfNeeded(go);
+          else if (this._maskedObjs.has(go)) this._clearMaskFrom(go);
+        }
+      }
+    }
+
     // Drop masks from objects that vanished from any registry this tick so
     // stale references don't hold a mask after the source object goes away.
     for (const obj of this._maskedObjs) {

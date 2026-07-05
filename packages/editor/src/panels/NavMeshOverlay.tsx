@@ -17,7 +17,7 @@ import { tilemapTilesets, animFrameRegion, type SceneData, type NavWaypoint } fr
  * obstacles + waypoints render as SVG. Toolbar + objects panel are portalled to
  * <body> so the scene's CSS transform doesn't warp them.
  */
-type NavTool = "select" | "brush" | "erase" | "obstacle" | "waypoint";
+type NavTool = "select" | "brush" | "erase" | "shelter" | "shelterDrizzle" | "shelterErase" | "obstacle" | "waypoint";
 
 const SIZES = [1, 2, 3, 4, 6, 8];
 
@@ -80,6 +80,7 @@ export function NavMeshView({ scene }: { scene: SceneData }) {
 
 export function NavMeshOverlay({ scene }: { scene: SceneData }) {
   const paintNavWalkable = useEditor((s) => s.paintNavWalkable);
+  const paintNavShelter = useEditor((s) => s.paintNavShelter);
   const setNavCellSize = useEditor((s) => s.setNavCellSize);
   const setNavSize = useEditor((s) => s.setNavSize);
   const setNavDebug = useEditor((s) => s.setNavDebug);
@@ -235,6 +236,18 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
         ctx.fillRect(c, r, 1, 1);
       }
     }
+    // Shelter mask on top — blue (1) = fully dry (drops + splashes removed);
+    // red (2) = rain still falls, only its splashes are removed.
+    if (nm.shelter) {
+      for (let r = 0; r < nm.rows; r++) {
+        for (let c = 0; c < nm.cols; c++) {
+          const v = nm.shelter[r * nm.cols + c];
+          if (!v) continue;
+          ctx.fillStyle = v === 2 ? "rgba(255,90,90,0.55)" : "rgba(90,190,255,0.55)";
+          ctx.fillRect(c, r, 1, 1);
+        }
+      }
+    }
   }, [nm]);
 
   if (!nm) return null;
@@ -255,6 +268,15 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
     if (lastCell.current && lastCell.current.c === c0 && lastCell.current.r === r0) return;
     lastCell.current = { c: c0, r: r0 };
     const rad = brushRef.current - 1;
+    const t = toolRef.current;
+    if (t === "shelter" || t === "shelterDrizzle" || t === "shelterErase") {
+      // 1 = kills both (blue), 2 = kills only drizzles (red), 0 = clear.
+      const on = t === "shelterErase" ? 0 : t === "shelterDrizzle" ? 2 : 1;
+      const cells: { c: number; r: number; on: number }[] = [];
+      for (let dr = -rad; dr <= rad; dr++) for (let dc = -rad; dc <= rad; dc++) cells.push({ c: c0 + dc, r: r0 + dr, on });
+      paintNavShelter(scene.id, cells);
+      return;
+    }
     const cells: { c: number; r: number; walkable: number }[] = [];
     for (let dr = -rad; dr <= rad; dr++) for (let dc = -rad; dc <= rad; dc++) cells.push({ c: c0 + dc, r: r0 + dr, walkable: value });
     paintNavWalkable(scene.id, cells);
@@ -278,7 +300,7 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
       setSelId(null);
       return;
     }
-    if (t === "brush" || t === "erase") {
+    if (t === "brush" || t === "erase" || t === "shelter" || t === "shelterDrizzle" || t === "shelterErase") {
       painting.current = true;
       lastCell.current = null;
       paintCellsAround(w, t === "erase" ? 0 : typeRef.current);
@@ -307,7 +329,7 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
     setHover(w);
     const t = toolRef.current;
     if (dragWp.current) { updateNavWaypoint(scene.id, dragWp.current, { x: Math.round(w.x), y: Math.round(w.y) }); return; }
-    if (painting.current && (t === "brush" || t === "erase")) paintCellsAround(w, t === "erase" ? 0 : typeRef.current);
+    if (painting.current && (t === "brush" || t === "erase" || t === "shelter" || t === "shelterDrizzle" || t === "shelterErase")) paintCellsAround(w, t === "erase" ? 0 : typeRef.current);
   };
   const onUp = () => { painting.current = false; lastCell.current = null; dragWp.current = null; };
 
@@ -334,7 +356,17 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
       {(["select", "brush", "erase", "obstacle", "waypoint"] as NavTool[]).map((t) => (
         <button key={t} onClick={() => { setTool(t); setPolyPts([]); }} style={BTN(tool === t)}>{t}</button>
       ))}
-      {(tool === "brush" || tool === "erase") && (
+      <span style={{ display: "flex", alignItems: "center", gap: 3, paddingLeft: 6, marginLeft: 2, borderLeft: "1px solid rgba(255,255,255,0.15)" }}
+        title="Paint static ENVIRONMENT cover — weather is blocked over these cells. BLUE = fully dry (removes both drops AND splashes). RED = keeps the rain falling but removes its splashes. For moving objects (NPCs, umbrellas) use Weather's Shelter Tags instead.">
+        <span style={{ color: "#7fd0ff", fontSize: 11 }}>☂</span>
+        <button onClick={() => { setTool("shelter"); setPolyPts([]); }} title="Fully dry — removes drops AND splashes"
+          style={{ ...BTN(tool === "shelter"), background: tool === "shelter" ? "rgba(90,190,255,0.55)" : "rgba(90,190,255,0.14)", color: "#cfeaff" }}>● dry</button>
+        <button onClick={() => { setTool("shelterDrizzle"); setPolyPts([]); }} title="Rain still falls here — removes only the splashes"
+          style={{ ...BTN(tool === "shelterDrizzle"), background: tool === "shelterDrizzle" ? "rgba(255,90,90,0.55)" : "rgba(255,90,90,0.14)", color: "#ffd6d6" }}>● no splash</button>
+        <button onClick={() => { setTool("shelterErase"); setPolyPts([]); }}
+          style={{ ...BTN(tool === "shelterErase"), background: tool === "shelterErase" ? "rgba(200,200,200,0.4)" : "rgba(255,255,255,0.06)" }}>erase</button>
+      </span>
+      {(tool === "brush" || tool === "erase" || tool === "shelter" || tool === "shelterDrizzle" || tool === "shelterErase") && (
         <span style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 4 }}>
           <span style={{ color: "#999" }}>size</span>
           {SIZES.map((s) => (
@@ -557,10 +589,10 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
               </text>
             </g>
           ))}
-          {hover && (tool === "brush" || tool === "erase") && (
+          {hover && (tool === "brush" || tool === "erase" || tool === "shelter" || tool === "shelterDrizzle" || tool === "shelterErase") && (
             <rect x={(Math.floor(hover.x / cs) - (brushSize - 1)) * cs} y={(Math.floor(hover.y / cs) - (brushSize - 1)) * cs}
               width={brushPx * cs} height={brushPx * cs} fill="none"
-              stroke={tool === "erase" ? "rgba(255,120,120,0.9)" : paintType === 2 ? "rgba(240,215,60,0.95)" : "rgba(120,255,160,0.95)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              stroke={tool === "erase" ? "rgba(255,120,120,0.9)" : tool === "shelter" ? "rgba(90,190,255,0.95)" : tool === "shelterDrizzle" ? "rgba(255,90,90,0.95)" : tool === "shelterErase" ? "rgba(210,210,210,0.9)" : paintType === 2 ? "rgba(240,215,60,0.95)" : "rgba(120,255,160,0.95)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />
           )}
         </svg>
       </div>

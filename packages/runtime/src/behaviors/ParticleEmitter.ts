@@ -633,17 +633,21 @@ export class ParticleEmitter extends Behavior {
       totalW += u.w;
       if (u.h > maxH) maxH = u.h;
     }
-    // Key includes the emitter's `name` so a BP with multiple emitters
-    // (HitEmitter + DeathEmitter on the same NPC) doesn't collide on
-    // the shared uid + same-frame init time. Plus a random suffix
-    // catches the unnamed-multi-emitter edge case where two anonymous
-    // emitters end up with the same key.
+    // DETERMINISTIC key: same emitter (uid + name) + same frame SET → the same
+    // texture. uid is globally unique per sprite; the frame-index signature
+    // disambiguates re-tunes. This means re-entering a scene on a PERSISTENT game
+    // REUSES the packed texture instead of leaking a fresh canvas per visit (the
+    // old `Math.random()` suffix minted a new one every init → GPU leak).
     const safeName = (this.name || "_").replace(/[^a-zA-Z0-9]+/g, "_");
-    const packedKey = `peaky_particle_pack_${this.sprite.uid}_${safeName}_${Math.floor(Math.random() * 1_000_000)}`;
-    // Release the texture from the PREVIOUS pack (frame re-selection / re-tune)
-    // so canvas textures don't pile up in the texture manager for the scene's
-    // whole life. Each pack is GPU+CPU heavy (totalW × maxH RGBA).
-    if (this._packedKey && scene.textures.exists(this._packedKey)) scene.textures.remove(this._packedKey);
+    const idxSig = usable.map((u) => u.index).join("-");
+    const packedKey = `peaky_particle_pack_${this.sprite.uid}_${safeName}_${idxSig}`;
+    // Already built (same frames) → reuse, don't re-pack.
+    if (scene.textures.exists(packedKey)) {
+      this._packedKey = packedKey;
+      return { key: packedKey, frameNames: usable.map((u) => String(u.index)) };
+    }
+    // Frames changed → drop the emitter's PREVIOUS pack so canvases don't pile up.
+    if (this._packedKey && this._packedKey !== packedKey && scene.textures.exists(this._packedKey)) scene.textures.remove(this._packedKey);
     this._packedKey = packedKey;
     const ct = scene.textures.createCanvas(packedKey, totalW, maxH);
     if (!ct) return null;
