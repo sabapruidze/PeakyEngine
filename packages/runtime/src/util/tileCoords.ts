@@ -97,16 +97,3 @@ export function resolveTilemapAndLayer(
   }
   return { tm, layerId };
 }
-
-/** Convert world coordinates to (c, r) for a named tilemap. Returns null if
- *  the tilemap doesn't exist or the position is out of bounds. */
-export function worldToCellOn(
-  scene: Phaser.Scene | undefined,
-  tilemapName: string,
-  worldX: number,
-  worldY: number,
-): { c: number; r: number } | null {
-  const tm = findTilemap(scene, tilemapName);
-  if (!tm) return null;
-  return tm.worldToCell(worldX, worldY);
-}

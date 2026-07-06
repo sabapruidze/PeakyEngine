@@ -8,7 +8,7 @@
 
 - **What**: browser 2D game engine (Construct-3 / GameMaker feel, UE5 mental models). React+Zustand editor authors a JSON project; a Phaser-3 runtime plays it.
 - **Packages**: `packages/shared` (pure TS types + registries), `packages/runtime` (Phaser runtime + behaviors), `packages/editor` (React editor bridging both).
-- **Authoring surface**: the **Logic Sheet** node graph is the ONLY logic UI. Runtime = `packages/runtime/src/LogicSheetRunner.ts`; editor UI = `packages/editor/src/panels/inspector/LogicSheet/LogicGraphCanvas.tsx` (4042 lines). Event sheets are dead (`EventsSection.tsx` is a tombstone) but `eval.ts`'s `runAction`/`evalCondition` still run every node.
+- **Authoring surface**: the **Logic Sheet** node graph is the ONLY logic UI. Runtime = `packages/runtime/src/LogicSheetRunner.ts`; editor UI = `packages/editor/src/panels/inspector/LogicSheet/LogicGraphCanvas.tsx` (4042 lines). Event sheets are fully DELETED (2026-07-06 dead-code sweep — EventsSection/ActionRow no longer exist) but `eval.ts`'s `runAction`/`evalCondition` still run every node.
 - **Registry locations**:
   - Actions: `packages/shared/src/sm/action.ts` — `StateActionKind`, `ACTION_KINDS`, `ACTION_DESCRIPTIONS`, `ACTION_DEFAULTS`.
   - Conditions/triggers: `packages/shared/src/sm/condition.ts` — `ConditionKind`, `CONDITION_KINDS`, `TRIGGER_KINDS`, `CONDITION_DESCRIPTIONS`.

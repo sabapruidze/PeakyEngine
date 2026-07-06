@@ -28,9 +28,27 @@ Weather sprite splashes are now stamped `peaky.soTransient` and skipped by
 entry". The GENERAL fix (bullets, other fire-and-forget `CreateSpriteObject` VFX)
 still needs the same opt-out on those spawn paths — see BUG3 below.
 
-### Notes
-- Diagnostic SaveSlot/Load/capture log lines (listed under 2026-06-28) are STILL in
-  and still spam the Output Log — strip once persistence + transitions are trusted.
+## Session 2026-07-06 — v0.0.1 release audit (fixes landed)
+
+All audit blockers + should-fixes are FIXED in `d863af6` + `4c6aa06`; the
+dead-code sweep (~5,000 lines incl. ActionRow/EventsSection + legacy event
+store cluster) and component docs landed after. See CLAUDE.md §0-pre for the
+full list. DONE from earlier sections: the diagnostic SaveSlot/Load/capture
+log spam is STRIPPED; weather-splash transient marking partially addresses
+BUG3 (weather only).
+
+### Still open for/after v0.0.1 (release-notes list)
+- Fast transitions Stage 3: loader in-place + CHOOSABLE music (persist/stop
+  toggle on Door + GoToLayout) + retire `FAST_TRANSITIONS` flag. Exported
+  games still use cold destroy+reboot transitions (functional, heavier).
+- Persistence BUG3 general case (bullets / fire-and-forget CreateSpriteObject
+  VFX resurrect on load — needs the `peaky.soTransient`-style opt-out on
+  those spawn paths) and BUG4 (tilemap serialize dumps ALL placements —
+  save bloat).
+- H3 freeze-cull ghost-fire; SmartTween rotation desync; periodic ~2s frame
+  spike with many NPCs; localStorage ~5MB save ceiling (error is surfaced).
+- Optional: texture-unload pass on transition if GPU memory ever bites
+  (persistent game keeps every visited texture resident — bounded).
 
 ## Session 2026-06-29 — lighting + weather + audit
 

@@ -508,14 +508,3 @@ async function writeRollingSnapshot(store: AssetStore, manifest: SplitManifest):
     console.warn("[save] rolling snapshot failed:", err);
   }
 }
-
-/**
- * Initialize a brand-new project in an empty directory. Writes an empty
- * project's manifest + (empty) assetIndex. Asset files don't exist yet —
- * they'll appear when the author creates assets.
- */
-export async function initEmptyProjectInFolder(store: AssetStore, name: string): Promise<PeakyProject> {
-  const project: PeakyProject = { ...emptyProject(), name };
-  await saveProjectToFolder(store, project);
-  return project;
-}

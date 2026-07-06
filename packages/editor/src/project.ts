@@ -455,71 +455,11 @@ export interface LogicFolder {
   graph: { nodes: LogicGraphNode[]; edges: LogicGraphEdge[] };
 }
 
-/**
- * Legacy single-trigger-per-event shape. Kept around so the migration
- * pass can read old projects; not used by the editor or runtime once
- * folders are populated.
- * @deprecated — replaced by LogicFolder + trigger-kind graph nodes.
- */
-export interface LogicEvent {
-  id: string;
-  autoLabel: string;
-  trigger: LogicTriggerNode;
-  graph: { nodes: LogicGraphNode[]; edges: LogicGraphEdge[] };
-}
-
-/** Trigger that fires an exec chain. Lives as a regular graph node
- *  with `kind: "trigger"` and its `LogicTriggerKind` in `type`. */
-export interface LogicTriggerNode {
-  id: string;
-  kind: LogicTriggerKind;
-  params: Record<string, unknown>;
-  position: { x: number; y: number };
-}
-
-export type LogicTriggerKind =
-  | "OnCreate"
-  | "OnCollide"          // params: { tag: string }
-  | "OnOverlap"          // params: { tag: string }
-  | "OnSeparate"         // params: { tag: string }
-  | "OnSignal"           // params: { signal: string }
-  | "OnKeyPressed"       // params: { action: string }
-  | "OnKeyHeld"          // params: { action: string } — continuous-while-held
-  | "OnKeyReleased"      // params: { action: string } — edge on release
-  | "OnDoubleKeyPressed" // params: { action: string, windowSec: number } — fires when same action is pressed twice within window
-  | "OnDamageTaken"
-  | "OnHealed"
-  | "OnDeath"
-  | "OnAnimationEnd"     // params: { anim?: string }
-  | "OnEveryNSeconds"    // params: { interval: number }
-  | "OnStateEnter"       // params: { state: string }
-  | "OnStateMain"        // params: { state: string }
-  | "OnStateExit"        // params: { state: string }
-  | "OnJump"
-  | "OnLand"
-  | "OnFall"
-  | "OnDashStart"
-  | "OnDashEnd"
-  | "OnMoved"
-  | "OnStopped"
-  | "OnTracerHit"
-  | "OnTracerLost"
-  | "OnTracedBy"
-  | "OnUntracedBy"
-  | "OnSquashStretchEnd"
-  | "OnParticleBurstEnd"
-  | "OnAnimatorAnimEnd"
-  | "OnTick"
-  | "OnSceneStart"
-  | "OnDialogueStart"
-  | "OnDialogueLine"
-  | "OnDialogueEnd"
-  | "OnAIStateEnter"
-  | "OnAIStateExit"
-  | "OnTargetSighted"
-  | "OnTargetLost"
-  | "OnTileDestroyed"
-  | "OnTileDamaged";
+// (The legacy LogicEvent / LogicTriggerNode / LogicTriggerKind shapes were
+// deleted — nothing read them, and the stale trigger union misled readers.
+// The AUTHORITATIVE trigger list is `LogicTriggerKind` in
+// packages/runtime/src/LogicSheetRunner.ts; graph nodes carry the kind as a
+// plain string in `LogicGraphNode.type`.)
 
 export interface LogicGraphNode {
   id: string;

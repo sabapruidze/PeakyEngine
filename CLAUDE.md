@@ -5,18 +5,55 @@ It's written for a Claude session joining cold. Read it top-to-bottom before
 editing — the engine has dense plumbing and the registries below are the
 "if you don't know it, you can't find it" parts.
 
-> **Authoring-surface note (v3):** the **Logic Sheet** (a node graph) is now the
-> ONLY logic-authoring UI. The old **Event Sheets** UI was removed — its file
-> `EventsSection.tsx` is a 22-line tombstone. The data shape `BlueprintDef.events`
-> and the per-event runner in `Sprite.ts` still exist as a **legacy runtime
-> path**, but no UI writes to them anymore. Where this doc below describes
-> "event sheets / the picker in EventsSection," read it as the Logic Sheet
+> **Authoring-surface note (v3, updated 2026-07-06):** the **Logic Sheet** (a
+> node graph) is the ONLY logic-authoring UI. The old **Event Sheets** UI is
+> fully DELETED — `EventsSection.tsx`, `ActionRow.tsx`, `SubjectVarPicker.tsx`,
+> `ValueExpressionPicker.tsx` and the legacy event-CRUD store actions no longer
+> exist (v0.0.1 dead-code sweep). The data shape `BlueprintDef.events` and the
+> per-event runner in `Sprite.ts` still exist as a **legacy runtime path** for
+> old project files, but no UI writes to them. Wherever this doc mentions
+> "event sheets / EventsSection / ActionRow," read it as the Logic Sheet
 > (`packages/editor/src/panels/inspector/LogicSheet/`, primary file
-> `LogicGraphCanvas.tsx`) + its runtime `LogicSheetRunner.ts`.
+> `LogicGraphCanvas.tsx`) + its runtime `LogicSheetRunner.ts`. New-node
+> registration is the LogicSheet palette + nodeRegistry + nodeDocs — see
+> `docs/API_REFERENCE.md` for the current recipes.
 
 ---
 
-## 0. Latest session (2026-07-03) — read this first
+## 0-pre. v0.0.1 release audit (2026-07-06) — newest
+
+A 5-agent pre-release audit (correctness / registries / dead code / leaks /
+release readiness) ran and its findings were FIXED in commits `d863af6` +
+`4c6aa06` (backup snapshot: `da012bb`, tag `backup-pre-v0.0.1-fixes`):
+- **Transition config carry** — `gotoScene()` now carries the TARGET scene's
+  bounds/gravity/bg (root cause of "loader door spawns wrong" + every
+  cross-size transition bug). `create()` reads `_sceneOverride ?? config`.
+- **create() reset list extended**: `shelterMask`/`navGrid`/`navDebug`
+  (stale painted weather-shelter across transitions) + `darkness`
+  (SetAmbientLight died after any restart).
+- **`peaky.sceneEnding` stays true** through the dying frames (OnSceneEnd
+  chains fired 2-7×; delay-doors re-fired); ScenePanel holds `pending` until
+  the transition resolves; loader flow has a bootGen hijack guard.
+- sceneReady gate SHUTDOWN cleanup; standalonePlayer seeds PersistentState
+  (export parity); ParticleEmitter skips the linger delayedCall during
+  shutdown (texture leak); OnScreenPrint re-arms; Projectile tags comma-only;
+  Camera skips pooled corpses; Tracer nav pass uses boxTraceAABB; deferred
+  tilemap deserialize is stashed until `_init` lands; autosave snapshot
+  writes BEFORE the live manifest; export warns at click time on a missing
+  runtime bundle; root `npm run build` chains `build:standalone`.
+- **Debug strip**: all diagnostic Logger/console spam removed; `window.peaky`
+  is DEV-only; top-level React **ErrorBoundary** (`editor/src/ErrorBoundary.tsx`).
+- **Dead-code sweep (~5,000 lines)**: DELETED `ActionRow.tsx`,
+  `EventsSection.tsx`, `SubjectVarPicker.tsx`, `ValueExpressionPicker.tsx`,
+  `BlueprintsPanel.tsx`, `BlueprintEditorPanel.tsx`, `BlueprintPicker.tsx`,
+  `InspectorPanel.tsx`, the legacy event-CRUD store cluster, the
+  `LogicEvent`/`LogicTriggerNode`/`LogicTriggerKind` trio in project.ts,
+  `initEmptyProjectInFolder`, `worldToCellOn`. Component docs added for
+  Shadow/LightSource/Outline/Weather (`componentDocs.ts`).
+- Remaining for the tag: user test pass → `v0.0.1` tag + export smoke test.
+  Known-issues for release notes are in `FOLLOWUPS.md`.
+
+## 0. Prior session (2026-07-03) — read this first
 
 Big engine work. See `docs/API_REFERENCE.md` for the full node/component/class
 reference (AI-oriented). Highlights, grouped:
@@ -300,16 +337,11 @@ packages/
 - `src/panels/UIWidgetTab.tsx` (1002 lines) — UI widget composer.
 - `src/panels/DialogueTab.tsx` (757 lines) — dialogue script editor.
 - `src/panels/ContentBrowser.tsx` (803 lines) — UE5-style asset browser.
-- `src/panels/inspector/LogicSheet/LogicGraphCanvas.tsx` (**4042 lines, the
+- `src/panels/inspector/LogicSheet/LogicGraphCanvas.tsx` (**~5100+ lines, the
   largest editor source file**) — the **Logic Sheet** node-graph UI: node
-  canvas, the RMB / search node picker (with ACTION/CONDITION categories),
-  and per-node configuration. (Replaces the removed event-sheet UI —
-  `EventsSection.tsx` is now a 22-line tombstone.)
-- `src/panels/inspector/EventsSection.tsx` (22 lines) — tombstone; the
-  Event Sheets UI was removed. Kept only so legacy imports resolve.
-- `src/panels/inspector/ActionRow.tsx` (1720 lines) — per-action pill
-  renderer. Every action kind has a switch case here that returns the
-  inline-editable field widgets.
+  canvas, the RMB / search node picker, the PALETTE, and per-node
+  configuration. (The old event-sheet UI — EventsSection/ActionRow — was
+  DELETED in the 2026-07-06 dead-code sweep; this is the only authoring UI.)
 
 ---
 
@@ -701,13 +733,13 @@ Every action has:
   filters it out).
 - A handler in `eval.ts`'s `runAction` switch (or a queue-handled
   no-op like `Wait`).
-- A category entry in `ACTION_CATEGORIES` (or `SYSTEM_ACTION_GROUPS`
-  for system kinds) in `EventsSection.tsx`.
-- An inline-pill renderer in `ActionRow.tsx`.
-- A one-line summary in `EventsSection.tsx`'s `actionSummary`.
+- A **Logic Sheet surface** (the only authoring UI since the Event Sheets
+  deletion): a palette entry in `LogicGraphCanvas.tsx` (PALETTE, ~line 5100)
+  OR pickup via the registry generator; param defaults / component chip in
+  `LogicSheet/nodeRegistry.ts`; a doc line in `LogicSheet/nodeDocs.ts`.
 
 **Adding a new action kind = touching ~8 places.** See §9 for the
-exact recipe.
+exact recipe (updated for the Logic Sheet).
 
 ---
 
@@ -753,32 +785,32 @@ inline pill, summary.
 
 ---
 
-## 9. Picker plumbing — the "magic registries"
+## 9. Picker plumbing — the "magic registries" (Logic Sheet era)
 
-This is the part most likely to bite you. The picker UI lives in
-`EventsSection.tsx`. There are **two filters in series**:
+This is the part most likely to bite you. The node picker lives in the
+**Logic Sheet** (`LogicGraphCanvas.tsx`) — the RMB/search palette. Filters
+in series:
 
 1. **Subject allow-list** — `actionKindsForSubject(subjectKind)` /
    `conditionKindsForSubject(subjectKind)` in `objects.ts`. Reads
    from `SYSTEM_ACTION_KINDS`, `BP_ACTION_KINDS`,
    `UIWIDGET_UNIVERSAL_ACTION_KINDS`, `MOUSE_ACTION_KINDS`,
    `KEYBOARD_ACTION_KINDS` (and condition counterparts).
-2. **Category list** — `ACTION_CATEGORIES` / `CONDITION_CATEGORIES`
-   in `EventsSection.tsx`. Groups kinds by left-rail label. The
-   System category is sub-grouped by `SYSTEM_ACTION_GROUPS`.
+2. **The palette** — `PALETTE` groups in `LogicGraphCanvas.tsx` (~line
+   5100: curated Triggers/Actions/Conditions entries with labels +
+   default params) plus the registry-driven generator in
+   `LogicSheet/nodeRegistry.ts` (`CURATED_CONDITION_KINDS` makes the
+   generator SKIP kinds the palette curates; `CONDITION_PARAM_DEFAULTS`,
+   `CONDITION_TO_COMPONENT` drive chips/params; `HIDDEN_FROM_PICKER` /
+   `HIDDEN_CONDITIONS` hide dead/duplicate nodes).
+3. **Docs** — `LogicSheet/nodeDocs.ts` `FILL` (falls back to
+   ACTION_/CONDITION_DESCRIPTIONS) feeds the in-editor Documentation
+   panel (`NodeReference.tsx`).
 
-A kind has to be in BOTH the subject list AND a category to show up.
-If you added an action and it's invisible, check both.
-
-There's also behavior-gating: when the subject is a specific BP, the
-category list filters by whether the BP carries the matching behavior
-(`hasCM`, `hasSR`, `hasCamera`, `hasTracer`, etc.). UI widgets get a
-separate allow-list (`UI_VISIBLE_ACTION_CATS`,
-`UI_VISIBLE_COND_CATS`).
-
-**Pickers use a 3-step modal:** Subject → Kind → Configure. The store
-remembers the last-used subject (`setActionSubject` / similar) so the
-picker re-opens on the same subject.
+A kind has to pass the subject list AND be reachable in the palette to
+show up. If you added a node and it's invisible, check both.
+`optionsForKey` in `LogicGraphCanvas.tsx` maps config keys → dropdowns
+(`tag` → BP-tag chips, `ease`, `behavior`, `param`, …).
 
 ---
 
@@ -796,15 +828,16 @@ picker re-opens on the same subject.
    `UIWIDGET_UNIVERSAL_ACTION_KINDS` / etc.).
 6. Implement handler in `packages/runtime/src/sm/eval.ts`'s
    `runAction` switch.
-7. Add to `ACTION_CATEGORIES` in
-   `packages/editor/src/panels/inspector/EventsSection.tsx`
-   (and `SYSTEM_ACTION_GROUPS` if it lives under System).
-8. Add inline-pill renderer in
-   `packages/editor/src/panels/inspector/ActionRow.tsx`.
-9. Add summary in `EventsSection.tsx`'s `actionSummary`.
+7. Add a palette entry in
+   `packages/editor/src/panels/inspector/LogicSheet/LogicGraphCanvas.tsx`
+   (`PALETTE`, ~line 5100 — label + default params) so authors can place it.
+8. Wire node UI metadata in `LogicSheet/nodeRegistry.ts` (param defaults,
+   component chip) if the kind needs a chip/dropdowns beyond `optionsForKey`.
+9. Add a friendly doc line in `LogicSheet/nodeDocs.ts` (`FILL`) —
+   otherwise the Documentation panel falls back to ACTION_DESCRIPTIONS.
 
 Skip any step and the action will be **invisible**, **invalid at
-load**, **silently no-op**, or **rendered as a generic placeholder**.
+load**, **silently no-op**, or **undocumented**.
 
 ### Adding a new condition kind
 
@@ -1152,10 +1185,9 @@ All three packages typecheck clean as of session end.
   separated — the chip's enabled should set a separate
   `chipEnabled` field that the runtime reads at attach time,
   leaving the runtime flag for `SetBehaviorEnabled` action use.
-- **EventsSection.tsx is 5028 lines** and growing. Splitting
-  out the picker modals + the category registries into separate
-  files is overdue. Currently every action / condition addition
-  has to scroll through a massive file.
+- **LogicGraphCanvas.tsx is 5100+ lines** and growing. Splitting the
+  PALETTE + per-node config UI into separate files is overdue —
+  every node addition scrolls through one massive file.
 
 ---
 
@@ -1215,9 +1247,7 @@ editor/project.ts                                   3115  ★ schema
 editor/runProject.ts                                2567  ★ runtime bridge
 editor/behaviorMeta.ts                               544
 
-editor/panels/inspector/LogicSheet/LogicGraphCanvas.tsx  4042  ★ Logic Sheet UI (largest)
-editor/panels/inspector/EventsSection.tsx             22  (tombstone — Event Sheets removed)
-editor/panels/inspector/ActionRow.tsx               2074  ★ per-action pills
+editor/panels/inspector/LogicSheet/LogicGraphCanvas.tsx  5100+ ★ Logic Sheet UI (largest)
 editor/panels/inspector/BlueprintInspector.tsx      1986
 editor/panels/SceneEditor.tsx                       2765
 editor/panels/SpriteTab.tsx                         2629
@@ -1322,9 +1352,9 @@ The user keeps an active test project at
 |---|---|
 | The list of action kinds | `packages/shared/src/sm/action.ts` |
 | The list of condition kinds | `packages/shared/src/sm/condition.ts` |
-| Why my action doesn't appear in the picker | `packages/shared/src/sm/objects.ts` (subject lists), `EventsSection.tsx` (categories) |
+| Why my node doesn't appear in the picker | `packages/shared/src/sm/objects.ts` (subject lists), `LogicGraphCanvas.tsx` (PALETTE ~5100) + `LogicSheet/nodeRegistry.ts` |
 | The action's runtime behavior | `packages/runtime/src/sm/eval.ts`, `runAction` switch |
-| The action's inline-pill renderer | `packages/editor/src/panels/inspector/ActionRow.tsx` |
+| The node's config UI / docs | `LogicGraphCanvas.tsx` (`optionsForKey`), `LogicSheet/nodeDocs.ts` |
 | Schema of a Blueprint / Scene / etc. | `packages/editor/src/project.ts` |
 | Project migration on load | `packages/editor/src/store.ts`, `migrateProject` |
 | Editor → Runtime bridge | `packages/editor/src/runProject.ts` |
