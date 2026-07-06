@@ -3748,12 +3748,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           // Cross-scene persistent state: permanently-removed objects + globals.
           ...serializePersistentState(),
         };
-        const spawnedN = snapshot.sprites.filter((s) => s.spawnId).length;
-        Logger.log({
-          level: "warn",
-          source: "SaveSlot",
-          message: `Save "${slot}" → ${snapshot.sprites.length} sprites, ${spawnedN} runtime-spawned (candles/drops). key=${saveKey}`,
-        });
         let ok = false;
         try {
           localStorage.setItem(saveKey, JSON.stringify(snapshot));
@@ -4107,30 +4101,23 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           // object NOT in the save (spawned after this save was taken) can be
           // removed below — the load should reproduce the saved world exactly.
           const savedSpawnIds = new Set<string>();
-          let dbgSavedSpawned = 0, dbgRecreated = 0, dbgRecreateFailed = 0, dbgNoSpawnFn = 0;
           for (const snap of parsed.sprites) {
-            if (snap.spawnId) { savedSpawnIds.add(snap.spawnId); dbgSavedSpawned++; }
+            if (snap.spawnId) savedSpawnIds.add(snap.spawnId);
             let s = (snap.instanceId ? byInst.get(snap.instanceId) : undefined)
               ?? (snap.spawnId ? bySpawn.get(snap.spawnId) : undefined)
               ?? byUid.get(snap.uid);
             // Runtime-spawned object that's gone — recreate it from the BP +
             // saved position, then restore its spawnId so a later save keeps it
             // stable. Without this, placed candles / drops vanish on load.
-            if (!s && snap.spawnId && (snap.bpId || snap.bpName)) {
-              if (!spawnFn) { dbgNoSpawnFn++; }
-              else {
-                const created = spawnFn(
-                  { id: snap.bpId, name: snap.bpName, x: snap.x, y: snap.y, layer: snap.spawnLayer || undefined },
-                  { immediate: true },
-                );
-                if (created) {
-                  created.spawnId = snap.spawnId;
-                  created.spawnLayerName = snap.spawnLayer ?? "";
-                  s = created;
-                  dbgRecreated++;
-                } else {
-                  dbgRecreateFailed++;
-                }
+            if (!s && snap.spawnId && (snap.bpId || snap.bpName) && spawnFn) {
+              const created = spawnFn(
+                { id: snap.bpId, name: snap.bpName, x: snap.x, y: snap.y, layer: snap.spawnLayer || undefined },
+                { immediate: true },
+              );
+              if (created) {
+                created.spawnId = snap.spawnId;
+                created.spawnLayerName = snap.spawnLayer ?? "";
+                s = created;
               }
             }
             if (!s) continue;
@@ -4189,11 +4176,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           // which legitimately exist on every entry — wiping them on Load made
           // boot-spawned enemies/objects vanish. The trade-off: an object
           // spawned in-session AFTER the save isn't removed on Load (minor).
-          Logger.log({
-            level: "warn",
-            source: "LoadSlot",
-            message: `Load "${slot}" → ${parsed.sprites.length} saved sprites, ${dbgSavedSpawned} were spawned; recreated ${dbgRecreated}, recreate-failed ${dbgRecreateFailed}, no-spawn-callback ${dbgNoSpawnFn}. key=${saveKey}`,
-          });
         } else if (parsed.vars) {
           for (const [k, v] of Object.entries(parsed.vars)) sprite.vars.set(k, v as never);
         }
@@ -6010,7 +5992,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const animP = tm.findAnimatedTilePlacementAt(layerId, cell.c, cell.r);
       if (animP) {
         const removed = tm.removeAnimatedTileAt(layerId, cell.c, cell.r);
-        Logger.log({ level: "log", source: sourceLabel ?? "RemoveTileAtWorld", message: `removed animated placement at (${cell.c}, ${cell.r}) on "${tmName}/${layerName}". id=${removed}.` });
         break;
       }
       // Same routing for BigTile placements. Authors expect "clear at world
@@ -6018,12 +5999,10 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
       const bigP = tm.findBigTilePlacementAt(layerId, cell.c, cell.r);
       if (bigP) {
         const removed = tm.removeBigTileAt(layerId, cell.c, cell.r);
-        Logger.log({ level: "log", source: sourceLabel ?? "RemoveTileAtWorld", message: `removed BigTile placement at (${cell.c}, ${cell.r}) on "${tmName}/${layerName}". id=${removed}.` });
         break;
       }
       const prev = tm.getTileAt(layerId, cell.c, cell.r);
       const ok = tm.removeTileAt(layerId, cell.c, cell.r);
-      Logger.log({ level: "log", source: sourceLabel ?? "RemoveTileAtWorld", message: `removed cell (${cell.c}, ${cell.r}) on "${tmName}/${layerName}". Was tile=${prev}, ok=${ok}.` });
       break;
     }
     case "FillTileRect": {
@@ -6190,7 +6169,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           }
           const prevHP = tm.getAnimatedTileHP(animPlacement.id);
           const nextHP = tm.damageAnimatedTile(sprite, layerId, cell.c, cell.r, damage, seg, box);
-          Logger.log({ level: "log", source: src, message: `animated tile "${def?.name || animPlacement.animatedTileId}" at (${cell.c}, ${cell.r}) HP ${prevHP} → ${nextHP === 0 ? "DESTROYED" : nextHP} (damage ${damage}, max ${maxHP}).` });
           return;
         }
         const bigPlacement = tm.findBigTilePlacementAt(layerId, cell.c, cell.r);
@@ -6208,7 +6186,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           // trunk-only tree's canopy) — a silent no-op so the multi-cell loop
           // keeps going.
           if (nextHP < 0) return;
-          Logger.log({ level: "log", source: src, message: `BigTile "${bigPlacement.bigTileId}" at (${cell.c}, ${cell.r}) HP ${prevHP} → ${nextHP === 0 ? "DESTROYED" : nextHP} (damage ${damage}, max ${maxHP}).` });
           return;
         }
         const idx = tm.getTileAt(layerId, cell.c, cell.r);
@@ -6223,7 +6200,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
         }
         const prevHP = tm.getTileHP(layerId, cell.c, cell.r);
         const nextHP = tm.damageTile(sprite, layerId, cell.c, cell.r, damage);
-        Logger.log({ level: "log", source: src, message: `tile idx ${idx} at (${cell.c}, ${cell.r}) HP ${prevHP} → ${nextHP === 0 ? "DESTROYED" : nextHP} (damage ${damage}, max ${maxHP}).` });
       };
 
       // Mining area, in priority order:
@@ -6266,8 +6242,6 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           const seg = tr.mineSegment() ?? undefined;
           const box = tr.mineBox() ?? undefined;
           const pts = tr.collectOverlappedTileCenters();
-          const dbgLayers = (sprite.scene.data.get("peaky.tilemapLayers") as unknown[] | undefined)?.length ?? 0;
-          Logger.log({ level: "warn", source: "MineDbg", message: `tracer "${tracerName}" collected ${pts.length} cell(s); geom=${seg ? `(${Math.round(seg.x0)},${Math.round(seg.y0)})->(${Math.round(seg.x1)},${Math.round(seg.y1)})` : "box"}; tilemapLayers=${dbgLayers}; pts=[${pts.map((p) => `(${Math.round(p.x)},${Math.round(p.y)})`).join(" ")}]` });
           // Pass seg/box so big/animated tiles test the tracer against their
           // CUSTOM POLYGON (sub-cell) — not whole-cell overlap. The 0-cells issue
           // was the layer registration (now fixed), NOT this gate.
@@ -6548,7 +6522,6 @@ function captureSpawnedForScene(sprite: Sprite): void {
     if (st) tileEdits[s.instanceId] = st;
   }
   setSceneTileEdits(sceneId, tileEdits);
-  Logger.log({ level: "warn", source: "SceneSave", message: `Captured ${records.length} runtime objects + ${Object.keys(tileEdits).length} tilemap edit sets leaving scene id="${sceneId}".` });
 }
 
 /** Snapshot the RUNTIME-created sprite objects (CreateSpriteObject) in a scene.
@@ -6757,10 +6730,13 @@ function drainSceneEndThen(sprite: Sprite, then: () => void): void {
       }
     }
   } finally {
-    // Clear flag BEFORE actually transitioning — the new scene's data
-    // manager is fresh anyway (Game.ts:create() resets peaky.sprites),
-    // but better hygiene to leave the old data clean.
-    scene.data.set("peaky.sceneEnding", false);
+    // `peaky.sceneEnding` deliberately stays TRUE: the old scene keeps ticking
+    // for 1+ frames while the transition is deferred/awaited (cover snapshot,
+    // builder preload), and during that window a delay-door or a queued
+    // GoToLayout would otherwise re-enter this drain — running OnSceneEnd
+    // chains 2-7× (duplicate sounds/saves/increments) and double-dispatching
+    // transitions. The recursion guard at the top eats those re-fires. The NEW
+    // scene starts clean: create() resets peaky.sceneEnding to false.
     // A layout transition always lands UNPAUSED. RestartLayout uses Phaser's
     // scene.restart(), which keeps the scene's DataManager AND clock
     // timeScale — so a SetPaused (or SetTimeScale 0) left active before the

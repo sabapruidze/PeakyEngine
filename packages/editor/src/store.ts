@@ -929,8 +929,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   undo: () => {
     _flushPendingSnap();
     const { past, project, future, historyTick } = get();
-    console.log(`[Undo] past=${past.length} future=${future.length}`);
-    if (past.length === 0) { console.log(`[Undo] nothing to undo`); return; }
+    if (past.length === 0) return;
     const prev = past[past.length - 1];
     _skipSnap = true;
     set({ past: past.slice(0, -1), project: prev, future: [project, ...future.slice(0, 49)], historyTick: historyTick + 1, ..._pruneViewToProject(prev, get()) });
@@ -940,8 +939,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   redo: () => {
     _flushPendingSnap();
     const { past, project, future, historyTick } = get();
-    console.log(`[Redo] past=${past.length} future=${future.length}`);
-    if (future.length === 0) { console.log(`[Redo] nothing to redo`); return; }
+    if (future.length === 0) return;
     const next = future[0];
     _skipSnap = true;
     set({ past: [...past.slice(-49), project], project: next, future: future.slice(1), historyTick: historyTick + 1, ..._pruneViewToProject(next, get()) });
@@ -7112,8 +7110,9 @@ export const useEditor = create<EditorState>((set, get) => ({
 }));
 
 // Debug — exposes the store on window so you can poke at project state from
-// devtools console. Safe to leave in development; remove for production builds.
-if (typeof window !== "undefined") {
+// devtools console. DEV-only: a public build must not expose the whole store
+// (any site script could mutate the user's project through it).
+if (typeof window !== "undefined" && import.meta.env.DEV) {
   (window as unknown as { peaky: typeof useEditor }).peaky = useEditor;
 }
 

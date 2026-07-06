@@ -185,7 +185,9 @@ export class Camera extends Behavior {
       // Camera BP happens to carry the same tag as their target, the Camera
       // matches itself first and follows a stationary point — which looks
       // like "camera doesn't follow."
-      target = all.find((s) => s !== this.sprite && s.tags.has(this.targetTag)) ?? null;
+      // Skip dead/pooled sprites — a pooled corpse stays in peaky.sprites, and
+      // following it pins the camera on wherever the body was parked.
+      target = all.find((s) => s !== this.sprite && !s.destroyed && !s._pooled && s.tags.has(this.targetTag)) ?? null;
       // Help debug "camera doesn't follow" — log once when a tag is set
       // but no matching sprite exists. Lists the tags actually present so
       // typos are obvious. Suppressed after the first failure.
@@ -297,7 +299,7 @@ export class Camera extends Behavior {
   panToTag(tag: string, durationSec: number, ease: string = "Sine.easeInOut"): void {
     if (!tag) return;
     const all = (this.sprite.scene.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
-    const target = all.find((s) => s.tags.has(tag));
+    const target = all.find((s) => !s.destroyed && !s._pooled && s.tags.has(tag));
     if (!target) return;
     this.panTo(target.gameObject.x, target.gameObject.y, durationSec, ease);
   }

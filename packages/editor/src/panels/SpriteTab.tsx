@@ -908,7 +908,6 @@ export function SpriteTab({ spriteId }: { spriteId: string }) {
     const anim = sprite.animations.find((a) => a.id === selectedAnimId);
     if (!anim) return;
     const { newW, newH, mode } = resizeDlg;
-    console.log(`[Resize] ATOMIC v2 — animation "${anim.name}" has ${anim.frames.length} frame(s); resizing to ${newW}x${newH} (${mode})`);
     try {
       // Resize every frame in THIS animation (each carries its own
       // imageW/imageH). We do NOT touch the asset-level sprite.width/height —

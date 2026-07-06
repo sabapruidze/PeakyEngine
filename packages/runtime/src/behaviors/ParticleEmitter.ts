@@ -483,7 +483,14 @@ export class ParticleEmitter extends Behavior {
     // to-die) host so it stays at the death position, and self-destruct the
     // emitter after the longest a particle could live.
     const aliveCount = (emitter as unknown as { getAliveParticleCount?: () => number })?.getAliveParticleCount?.() ?? 0;
-    if (emitter && aliveCount > 0 && scene) {
+    // The linger path only works while the scene is LIVE. During scene SHUTDOWN
+    // (transition/restart) the Clock has already shut down — a delayedCall
+    // scheduled now never fires, so the emitter + packed canvas would leak one
+    // copy per transition (packed keys embed the sprite uid, which is fresh
+    // every run, so the next run can't reuse them). Shutting down destroys all
+    // display objects anyway — no linger to preserve; clean up synchronously.
+    const shuttingDown = !!(scene?.sys as unknown as { isShuttingDown?: () => boolean })?.isShuttingDown?.();
+    if (emitter && aliveCount > 0 && scene && !shuttingDown) {
       emitter.stop();
       (emitter as unknown as { stopFollow?: () => void }).stopFollow?.();
       const lingerMs = (this.lifetime + Math.max(0, this.lifetimeJitter)) * 1000 + 100;

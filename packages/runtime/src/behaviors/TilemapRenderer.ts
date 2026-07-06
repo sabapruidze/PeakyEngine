@@ -2093,7 +2093,6 @@ export class TilemapRenderer extends Behavior {
   }
 
   private _spawnTileDrops(actor: Sprite, drops: { bp: string; min: number; max: number; chance: number; instanceName?: string; animation?: string; frame?: number; vars?: Record<string, string | number | boolean> }[], worldX: number, worldY: number, dropLayerName?: string): void {
-    Logger.log({ level: "log", source: "Drops", message: `evaluating ${drops.length} drop entr${drops.length === 1 ? "y" : "ies"} on actor "${actor.blueprintName || actor.instanceName || "?"}"` });
     const spawn = actor.scene.data.get("peaky.spawn") as
       | ((arg: { id?: string; name?: string; x: number; y: number; layer?: string; vars?: Record<string, number | string | boolean>; instanceName?: string; animation?: string; frame?: number }) => void)
       | undefined;
@@ -2119,7 +2118,6 @@ export class TilemapRenderer extends Behavior {
     if (valid.length === 0) return;
     const totalWeight = valid.reduce((sum, d) => sum + Math.max(0, typeof d.chance === "number" ? d.chance : 100), 0);
     if (totalWeight <= 0) {
-      Logger.log({ level: "log", source: "Drops", message: `all entries have 0 chance — nothing rolled` });
       return;
     }
     // Roll across full 100 so when totalWeight < 100, the gap is "no drop".
@@ -2132,7 +2130,6 @@ export class TilemapRenderer extends Behavior {
       if (roll < cumulative) { picked = d; break; }
     }
     if (!picked) {
-      Logger.log({ level: "log", source: "Drops", message: `rolled ${roll.toFixed(1)}/${denominator.toFixed(0)} — no drop (gap below 100%)` });
       return;
     }
     {
@@ -2141,10 +2138,8 @@ export class TilemapRenderer extends Behavior {
       const max = Math.max(min, Math.floor(d.max ?? min));
       const count = min + Math.floor(Math.random() * (max - min + 1));
       if (count <= 0) {
-        Logger.log({ level: "log", source: "Drops", message: `"${d.bp}" rolled count 0 — skipped` });
         return;
       }
-      Logger.log({ level: "log", source: "Drops", message: `rolled "${d.bp}" ×${count} (roll ${roll.toFixed(1)}/${denominator.toFixed(0)})` });
       const targetLayerId = this._resolveDropLayerId(dropLayerName);
       for (let i = 0; i < count; i++) {
         spawn({
@@ -2158,7 +2153,6 @@ export class TilemapRenderer extends Behavior {
           vars: d.vars,
         });
       }
-      Logger.log({ level: "log", source: "Drops", message: `"${d.bp}" × ${count} spawned at (${worldX.toFixed(0)}, ${worldY.toFixed(0)})` });
       // Notify the miner + Main Sheets: `_tileDrop` (OnTileDrop trigger) + a
       // `lastDrop` snapshot (Get Last Drop) so authors can react — count a
       // harvest, play a sound — without putting logic on each dropped item.

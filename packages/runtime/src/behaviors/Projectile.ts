@@ -371,7 +371,10 @@ export class Projectile extends Behavior {
   private _parseTags(): string[] {
     if (this.targetTags !== this._tagCacheSrc) {
       this._tagCacheSrc = this.targetTags;
-      this._tagCache = this.targetTags.split(/[\s,]+/).map((t) => t.trim()).filter((t) => t.length > 0);
+      // Comma-only, like EVERY other tag field (Tracer, AIBrain, Shadow,
+      // Weather…). The old whitespace-OR-comma split made a tag with a space
+      // ("red team") behave differently for projectiles than everywhere else.
+      this._tagCache = this.targetTags.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
     }
     return this._tagCache;
   }

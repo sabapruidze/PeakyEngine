@@ -30,10 +30,18 @@ function getStack(scene: Phaser.Scene): PrintStack {
   }
   if (!stack.installed) {
     stack.installed = true;
-    scene.events.on(Phaser.Scenes.Events.UPDATE, () => tickStack(scene, stack!));
+    const tick = () => tickStack(scene, stack!);
+    scene.events.on(Phaser.Scenes.Events.UPDATE, tick);
+    // Full re-arm on SHUTDOWN: scene.events + scene.data both SURVIVE a
+    // scene.restart() (in-place transitions), so without removing the ticker
+    // and dropping the stack, a zombie UPDATE listener would keep poking the
+    // OLD run's destroyed Text objects in every later scene.
     scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      scene.events.off(Phaser.Scenes.Events.UPDATE, tick);
       for (const e of stack!.entries) e.text.destroy();
       stack!.entries.length = 0;
+      stack!.installed = false;
+      scene.data.remove(SCENE_KEY);
     });
   }
   return stack;

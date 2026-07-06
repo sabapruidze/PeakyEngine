@@ -12,6 +12,7 @@
 import { runScene, buildSpritePreload } from "./runProject";
 import type { PeakyProject, SceneData } from "./project";
 import type { Peaky, Sprite } from "@peaky/runtime";
+import { resetPersistentState, seedPersistentGlobals, seedPersistentLists } from "@peaky/runtime";
 import { registerProjectFonts } from "./fontRegistry";
 
 export interface StandaloneBootOptions {
@@ -67,6 +68,28 @@ export async function boot(opts: StandaloneBootOptions): Promise<void> {
     console.error("[Peaky Standalone] project has no scenes");
     return;
   }
+
+  // PersistentState seeding — mirrors ScenePanel's Play boot EXACTLY. Without
+  // this an exported game starts with UNSEEDED globals/lists (global:<name>
+  // reads 0/"" until a SetGlobal runs) and stale state on a re-boot — the #1
+  // export-vs-editor behavior divergence found in the v0.0.1 audit.
+  resetPersistentState();
+  seedPersistentGlobals({
+    ...Object.fromEntries(
+      (opts.project.globalVariables ?? []).map((g) => [g.name, g.isArray ? [...(g.items ?? [])] : g.default]),
+    ),
+    ...Object.fromEntries(
+      opts.project.blueprints.flatMap((bp) => bp.variables.filter((v) => v.global).map((v) => [v.name, v.default])),
+    ),
+  });
+  seedPersistentLists(
+    Object.fromEntries(
+      (opts.project.lists ?? []).map((l) => [
+        l.name,
+        Object.fromEntries((l.entries ?? []).map((e) => [e.name, e.value])),
+      ]),
+    ),
+  );
 
   // Active Peaky instance — kept in this closure so the scene-transition
   // listener can tear it down before booting the next scene's instance.

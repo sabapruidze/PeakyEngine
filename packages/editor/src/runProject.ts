@@ -2166,14 +2166,13 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
           const tag = (pendingEntry.travelerTag && pendingEntry.travelerTag.trim()) || "player";
           const list = (sceneForRegistry.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
           const traveler = list.find((s) => !s.destroyed && s.tags.has(tag));
-          Logger.log({ level: "log", source: "DoorArrival", message: `scene="${scene.name}"(${scene.id}) destDoor="${pendingEntry.destDoor}" → door ${destInst ? `found @(${destInst.x},${destInst.y})` : "NOT FOUND"}, traveler[${tag}] ${traveler ? "found" : "NOT FOUND"}` });
           if (destInst && traveler?.gameObject) {
             const body = (traveler.gameObject as { body?: { reset?: (x: number, y: number) => void } }).body;
             if (body?.reset) body.reset(destInst.x, destInst.y);
             else traveler.gameObject.setPosition(destInst.x, destInst.y);
+          } else if (!destInst) {
+            Logger.log({ level: "warn", source: "Door", message: `Arrival door "${pendingEntry.destDoor}" not found in scene "${scene.name}" — traveler left at its authored position.` });
           }
-        } else if (pendingEntry) {
-          Logger.log({ level: "log", source: "DoorArrival", message: `scene="${scene.name}"(${scene.id}) is NOT the target(${pendingEntry.destSceneId}) — kept entry for the real destination.` });
         }
       }
 
@@ -2198,6 +2197,13 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
           try { parent.dispatchEvent(new CustomEvent("peaky:sceneReady", { bubbles: true })); } catch { /* headless */ }
         };
         sceneForRegistry.events.on(Phaser.Scenes.Events.POST_UPDATE, check);
+        // scene.events survives scene.restart() (Phaser only clears TRANSITION_*)
+        // — a run that ends before every tilemap rendered would leak this checker
+        // into the NEXT run, where its stale closure can fire a premature
+        // `peaky:sceneReady` and drop the cover on an unpainted frame.
+        sceneForRegistry.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+          sceneForRegistry.events.off(Phaser.Scenes.Events.POST_UPDATE, check);
+        });
       }
       // Object pool — Map<bpId, inactiveSpriteList>. Populated by the
       // pool-fill loop at scene end; consulted by peaky.spawn (pop on
@@ -2319,7 +2325,6 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
       const replayCarriedSpawns = () => {
         type SpawnRec = { k?: string; spawnId: string; bpId?: string; bpName?: string; spriteId?: string; layer?: string; x: number; y: number; facingScaleX?: number; sx?: number; sy?: number; angle?: number; vars?: Record<string, unknown>; behaviors?: Array<{ kind: string; state: Record<string, unknown> }> };
         const recs = getSceneSpawns(scene.id) as SpawnRec[];
-        Logger.log({ level: "warn", source: "SceneSave", message: `Entering scene id="${scene.id}" — ${recs.length} carried-over runtime objects to replay.` });
         if (recs.length) {
           const spawnFn = sceneForRegistry.data.get("peaky.spawn") as
             | ((arg: { id?: string; name?: string; x: number; y: number; layer?: string }, opts?: { immediate?: boolean }) => Sprite | null)
@@ -2385,7 +2390,6 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
       // by the animation's fps. Optional AABB collider when `hasCollider`
       // is set — same arcade body the engine uses for BPs, so tag-based
       // collide / overlap (CollisionScan.ts) just works.
-      console.log(`[Runtime] spawn loop sees ${(scene.spritePlacements ?? []).length} SpritePlacements`);
       for (const placement of scene.spritePlacements ?? []) {
         const asset = project.sprites.find((s) => s.id === placement.spriteId);
         if (!asset) {
@@ -2407,7 +2411,6 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
           : 0;
         const firstKey = hasFrames ? frameTextureKey(asset.id, anim.id, startIdx) : "";
         const textureExists = hasFrames && sceneForRegistry.textures.exists(firstKey);
-        console.log(`[Runtime] placement ${placement.id}: sprite="${asset.name}" anim="${anim?.name ?? "(none)"}" frame=${startIdx} key="${firstKey}" textureExists=${textureExists}`);
         const go = sceneForRegistry.add.sprite(placement.x, placement.y, textureExists ? firstKey : "__DEFAULT");
         if (!textureExists) {
           // Either the sprite has no frames at all, or the first frame
@@ -3131,8 +3134,16 @@ export async function runScene(project: PeakyProject, scene: SceneData, parent: 
 }
 
 /** In-place transition — rebuild `scene` on an EXISTING game (textures kept →
- *  fast). Keeps the same Phaser.Game/canvas; does NOT touch `__peakyGame`. */
+ *  fast). Keeps the same Phaser.Game/canvas; does NOT touch `__peakyGame`.
+ *  Carries the TARGET scene's world config so create() doesn't rebuild with the
+ *  OLD scene's bounds/gravity/background (wrong-world clamping = wrong spawn). */
 export async function buildSceneOn(game: Peaky, project: PeakyProject, scene: SceneData, parent: HTMLElement): Promise<void> {
-  const { build, preload } = await makeSceneBuilder(project, scene, parent);
-  game.gotoScene(build, preload);
+  const { build, preload, effectiveScene: eff } = await makeSceneBuilder(project, scene, parent);
+  game.gotoScene(build, preload, {
+    layoutWidth: eff.width,
+    layoutHeight: eff.height,
+    boundedCamera: !eff.unboundedScroll,
+    gravity: eff.gravity,
+    backgroundColor: eff.backgroundColor,
+  });
 }

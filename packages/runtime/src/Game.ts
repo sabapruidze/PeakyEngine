@@ -57,6 +57,14 @@ export interface PeakyConfig {
 export type Builder = (game: Peaky) => void;
 /** Phaser preload hook — runs before the scene's `create`, suitable for `scene.load.image(...)`. */
 export type PreloadHook = (scene: Phaser.Scene) => void;
+/** The per-scene world settings a transition must carry to the next build. */
+export interface SceneRunConfig {
+  layoutWidth: number;
+  layoutHeight: number;
+  boundedCamera: boolean;
+  gravity: number;
+  backgroundColor: number;
+}
 
 export class Peaky {
   private readonly config: Required<PeakyConfig>;
@@ -122,6 +130,14 @@ export class Peaky {
     return s;
   }
 
+  /** Per-scene settings applied by create(). On the initial boot these come from
+   *  the Peaky config; an in-place transition (gotoScene) OVERRIDES them with the
+   *  TARGET scene's values — without this, a restart would build the new scene
+   *  with the OLD scene's world/camera bounds, gravity and background (bodies
+   *  clamped to the wrong world = "spawned in the wrong place", camera unable to
+   *  scroll, wrong bg). */
+  private _sceneOverride?: SceneRunConfig;
+
   /** Swap the builder + preload for the NEXT scene build. Pure setter — pair
    *  with `scene.restart()` (via `gotoScene`) to rebuild in place. */
   setBuilder(build: Builder, preload?: PreloadHook): void {
@@ -129,12 +145,14 @@ export class Peaky {
     this._preload = preload;
   }
 
-  /** In-place scene transition: swap the builder, then restart the Phaser scene
-   *  so `create()` rebuilds the NEW scene on the SAME game (textures kept). Fires
-   *  the prior run's SHUTDOWN cleanup + the create() registry resets — same path
-   *  RestartLayout uses. No-op if the game is already torn down. */
-  gotoScene(build: Builder, preload?: PreloadHook): void {
+  /** In-place scene transition: swap the builder (+ the target scene's world
+   *  config), then restart the Phaser scene so `create()` rebuilds the NEW scene
+   *  on the SAME game (textures kept). Fires the prior run's SHUTDOWN cleanup +
+   *  the create() registry resets — same path RestartLayout uses. No-op if the
+   *  game is already torn down. */
+  gotoScene(build: Builder, preload?: PreloadHook, sceneCfg?: SceneRunConfig): void {
     this.setBuilder(build, preload);
+    if (sceneCfg) this._sceneOverride = sceneCfg;
     const ph = this.scene;
     if (ph) ph.scene.restart();
   }
@@ -238,6 +256,16 @@ export class Peaky {
         this.data.set("peaky.spritePool", new Map());
         this.data.set("peaky.placementsBySpriteId", new Map());
         this.data.set("peaky.activePlacement", null);
+        // Scene-authored lookups that the builder only sets when the scene HAS
+        // them — without removal, a scene WITHOUT painted shelter / nav keeps
+        // the PREVIOUS scene's mask/grid (rain dying in ghost cells, AI pathing
+        // against the old level). Same for the SetAmbientLight darkness sheet:
+        // restart destroys the Rectangle but the cached ref survives, so the
+        // next SetAmbientLight pokes a dead object and night stops working.
+        this.data.remove("peaky.shelterMask");
+        this.data.remove("peaky.navGrid");
+        this.data.remove("peaky.navDebug");
+        this.data.remove("peaky.darkness");
         // Pause + transition flags.
         this.data.set("peaky.pauseAll", false);
         this.data.set("peaky.pausedLayers", new Set());
@@ -260,17 +288,24 @@ export class Peaky {
           }
         });
         self.sprites.length = 0;
-        this.physics.world.gravity.y = self.config.gravity;
+        // The CURRENT scene's world settings — the boot config, unless an
+        // in-place transition (gotoScene) carried the TARGET scene's values.
+        const sc = self._sceneOverride ?? self.config;
+        this.physics.world.gravity.y = sc.gravity;
+        // Background follows the scene too — the Phaser game-level bg was set
+        // from the BOOT scene only; a transition must recolor the main camera.
+        this.cameras.main.setBackgroundColor(sc.backgroundColor);
         // Camera + physics bounds both follow the unbounded flag. The flag
         // says "no defined layout" — i.e. the world is unlimited — so we
         // skip the camera clamp AND give bodies a virtually infinite play
         // area. Without the physics relax, a player walking past the
         // (small, no-longer-meaningful) layout width would stop dead at the
         // invisible edge even though the camera scrolls freely.
-        if (self.config.boundedCamera) {
-          this.cameras.main.setBounds(0, 0, self.config.layoutWidth, self.config.layoutHeight);
-          this.physics.world.setBounds(0, 0, self.config.layoutWidth, self.config.layoutHeight);
+        if (sc.boundedCamera) {
+          this.cameras.main.setBounds(0, 0, sc.layoutWidth, sc.layoutHeight);
+          this.physics.world.setBounds(0, 0, sc.layoutWidth, sc.layoutHeight);
         } else {
+          this.cameras.main.removeBounds();
           this.physics.world.setBounds(-1e6, -1e6, 2e6, 2e6);
         }
 

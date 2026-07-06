@@ -808,10 +808,12 @@ export class Tracer extends Behavior {
     const navGrid = this.sprite.scene.data.get("peaky.navGrid") as NavGrid | undefined;
     if (navGrid && filterTags.length > 0) {
       // BOX tracers test their whole rectangle; LINE tracers test the segment.
+      // Same boxTraceAABB as the sprite/tile/placement passes — the old
+      // min/max±halfT inflation padded the FRONT and BACK ends too, so this
+      // pass hit nav obstacles over a larger area than the drawn box.
       const isBox = this.shape === "box";
       const halfT = this._scaledThick() / 2;
-      const bMinX = Math.min(px, ex) - halfT, bMinY = Math.min(py, ey) - halfT;
-      const bMaxX = Math.max(px, ex) + halfT, bMaxY = Math.max(py, ey) + halfT;
+      const { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY } = boxTraceAABB(px, py, ex, ey, halfT);
       for (const o of navGrid.obstacles) {
         if (!o.tags.some((t) => filterTags.indexOf(t) >= 0)) continue;
         const hits = isBox ? rectHitsPolygon(bMinX, bMinY, bMaxX, bMaxY, o.points) : segmentHitsPolygon(px, py, ex, ey, o.points);

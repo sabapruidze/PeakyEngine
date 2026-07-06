@@ -198,9 +198,12 @@ export function ScenePanel() {
       activeScene = target;
       pendingTimer = setTimeout(() => {
         pendingTimer = null;
-        pending = false;
-        if (FAST_TRANSITIONS && gameRef.current) void transitionTo(activeScene);
-        else void boot(activeScene);
+        // Hold `pending` until the transition RESOLVES — releasing it up front
+        // let a second GoToLayout (fired from the old scene's dying frames)
+        // start a concurrent boot/restart.
+        const done = () => { pending = false; };
+        if (FAST_TRANSITIONS && gameRef.current) void transitionTo(activeScene).finally(done);
+        else void boot(activeScene).finally(done);
       }, 0);
     };
     container.addEventListener("peaky:goToScene", onGoToScene);
@@ -268,10 +271,18 @@ export function ScenePanel() {
             container.dispatchEvent(new CustomEvent("peaky:goToScene", { detail: { name: target.name }, bubbles: true }));
             return;
           }
+          // Hijack guard — if ANYTHING starts a newer boot/transition while
+          // this loader flow is warming assets (e.g. the loader scene's own
+          // logic fires a GoToLayout), this flow must go inert instead of
+          // yanking the player to its stale target later. bootGen bumps on
+          // every boot/transitionTo; capture ours AFTER the loader booted.
+          const myFlow = bootGen;
+          const hijacked = () => cancelled || bootGen !== myFlow;
           // Flag the scene as loading — IsLoading condition reads this.
           ph.data.set("peaky.isLoading", true);
           // Emit OnLoadStart once the loading scene's sprites are alive.
           const fanout = (name: string, payload?: unknown) => {
+            if (hijacked()) return;
             const list = (ph.data.get("peaky.sprites") as Sprite[] | undefined) ?? [];
             for (const s of list) {
               if (s.destroyed) continue;
@@ -288,6 +299,7 @@ export function ScenePanel() {
           const elapsed = performance.now() - startedAt;
           const wait = Math.max(0, minDisplayMs - elapsed);
           setTimeout(() => {
+            if (hijacked()) return; // superseded — don't yank to the stale target
             // Clear the IsLoading flag and consume the one-shot scene
             // override before the target boots — keeps the next
             // GoToLayoutWithLoad starting from a clean slate.
@@ -322,8 +334,7 @@ export function ScenePanel() {
           // and rare edge cases where the loader silently drops events.
           ph.load.start();
           setTimeout(() => {
-            if (complete || cancelled) return;
-            console.log("[Loader] safety timer fired — Phaser's complete event didn't, force-finishing");
+            if (complete || hijacked()) return;
             fanout("_loadProgress", { pct: 1 });
             fanout("_loadComplete");
             complete = true;
