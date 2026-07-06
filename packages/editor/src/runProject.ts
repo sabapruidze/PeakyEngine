@@ -2193,7 +2193,8 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
           // First frame everything's ready → wait one more so it's been painted.
           if (!sawAllReady) { sawAllReady = true; return; }
           sceneForRegistry.events.off(Phaser.Scenes.Events.POST_UPDATE, check);
-          sceneForRegistry.data.set("peaky.sceneReady", true);
+          // The DOM event is the ONLY consumer (ScenePanel's cover) — no
+          // scene.data mirror; a stale data flag misled a prior audit.
           try { parent.dispatchEvent(new CustomEvent("peaky:sceneReady", { bubbles: true })); } catch { /* headless */ }
         };
         sceneForRegistry.events.on(Phaser.Scenes.Events.POST_UPDATE, check);

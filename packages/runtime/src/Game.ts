@@ -270,7 +270,6 @@ export class Peaky {
         this.data.set("peaky.pauseAll", false);
         this.data.set("peaky.pausedLayers", new Set());
         this.data.set("peaky.sceneEnding", false);
-        this.data.set("peaky.sceneReady", false);
         this.data.set("peaky.isLoading", false);
         this.data.set("peaky.loadingSceneOverride", "");
         // Release the OUTGOING run's per-sprite resources on scene SHUTDOWN.

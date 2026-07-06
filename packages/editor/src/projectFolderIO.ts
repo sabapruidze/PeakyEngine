@@ -469,15 +469,15 @@ export async function saveProjectToFolder(store: AssetStore, project: PeakyProje
       recipes: recPaths,
     },
   };
-  await store.writeJSON(PROJECT_MANIFEST_FILE, manifest);
-
-  // Rolling snapshot — keep the last AUTOSAVE_SLOTS manifests under
-  // .autosave/autosave_<N>.json so the user can recover an earlier
-  // version if the live manifest gets corrupted. Each save bumps the
-  // slot (mod AUTOSAVE_SLOTS); next save overwrites the oldest. The
-  // main project.peaky.json stays as the live source-of-truth load
-  // target; snapshots are pure backups.
+  // Rolling snapshot FIRST, live manifest SECOND. If a crash corrupts the
+  // live-manifest write below, the just-written snapshot already holds this
+  // save's full content → nothing is lost. The old order (manifest first)
+  // left a window where a mid-write crash corrupted the live file while the
+  // newest snapshot was one save behind.
+  // Snapshots live under .autosave/autosave_<N>.json (rolling AUTOSAVE_SLOTS);
+  // the main project.peaky.json stays the live source-of-truth load target.
   await writeRollingSnapshot(store, manifest);
+  await store.writeJSON(PROJECT_MANIFEST_FILE, manifest);
 }
 
 /** How many rolling autosave slots to keep. With ~1 save per edit burst,

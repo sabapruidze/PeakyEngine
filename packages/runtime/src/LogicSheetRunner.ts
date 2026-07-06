@@ -696,9 +696,12 @@ function subscribeTrigger(sprite: Sprite, folder: LogicFolder, trigger: LogicGra
       let fired = false;     // already fired for the current overlap window
       const onUpdate = () => {
         if (sprite.destroyed) return;
-        const overlapping = tag
-          ? [...sprite._currOverlap].some((o) => o.tags.has(tag))
-          : sprite._currOverlap.size > 0;
+        // Iterate the Set directly — a [...spread] here allocates an array
+        // per TICK per trigger-carrying sprite.
+        let overlapping = false;
+        if (tag) {
+          for (const o of sprite._currOverlap) { if (o.tags.has(tag)) { overlapping = true; break; } }
+        } else overlapping = sprite._currOverlap.size > 0;
         if (overlapping) {
           const now = sprite.scene.time.now / 1000;
           if (overlapSince < 0) { overlapSince = now; fired = false; }

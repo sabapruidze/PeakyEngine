@@ -290,6 +290,9 @@ export class TilemapRenderer extends Behavior {
    *  scene — a map that deferred on a missing texture keeps this false until its
    *  retry re-runs `_init`. */
   rendered = false;
+  /** Carried tilemap edits that arrived while `_init` was DEFERRED on a missing
+   *  texture — applied the moment the deferred init completes. */
+  private _pendingDeserialize?: Record<string, unknown>;
   private phaserLayers: Phaser.Tilemaps.TilemapLayer[] = [];
   /** Per-Phaser-layer depth offset (added on top of _layerBaseDepth in
    *  applyLayer). For non-Y-sort layers this is L.z × 0.01. */
@@ -464,6 +467,14 @@ export class TilemapRenderer extends Behavior {
    *  placements (the save is the source of truth), re-apply tile edits, re-place
    *  BigTile + animated tiles, restore HP. */
   deserialize(state: Record<string, unknown>): void {
+    // If `_init` DEFERRED (tileset texture not registered yet), applying now
+    // would wipe the authored placement records and every `placeBigTile` /
+    // `setTileAt` below would no-op against the unbuilt map — the carried
+    // edits silently vanish. Stash and re-apply when the deferred init lands.
+    if (!this.rendered) {
+      this._pendingDeserialize = state;
+      return;
+    }
     const s = state as {
       tiles?: { l: string; c: number; r: number; i: number }[];
       big?: { l: string; b: string; c: number; r: number }[];
@@ -1005,6 +1016,12 @@ export class TilemapRenderer extends Behavior {
       }
     }
     this.rendered = true;
+    // Apply carried edits that arrived while init was deferred (see deserialize).
+    if (this._pendingDeserialize) {
+      const pending = this._pendingDeserialize;
+      this._pendingDeserialize = undefined;
+      try { this.deserialize(pending); } catch (e) { console.warn("[Peaky] deferred tilemap edit restore threw", e); }
+    }
   }
 
   /**

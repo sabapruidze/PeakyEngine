@@ -356,7 +356,17 @@ export async function exportWebPhase1(project: PeakyProject): Promise<void> {
       zip.file("peaky-standalone.js", text);
       bundleStatus = "included";
     }
-  } catch { /* missing — README explains */ }
+  } catch { /* handled below */ }
+  // Surface a MISSING runtime at click time — a silent success here hands the
+  // user a ZIP that can't boot (only the README explains why). Let them cancel.
+  if (bundleStatus === "missing") {
+    const proceed = window.confirm(
+      "The game runtime (peaky-standalone.js) could not be found — the exported game will NOT run.\n\n" +
+      "Fix: run `npm run build:standalone` in packages/editor, reload, and export again.\n\n" +
+      "Export the broken ZIP anyway?",
+    );
+    if (!proceed) return;
+  }
   zip.file("README.txt", buildReadme(baseName, bundleStatus, added, missed, inlined, loose, oversized));
   const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
   downloadBlob(`${baseName}.zip`, blob);
