@@ -1651,6 +1651,12 @@ export interface TilemapLayer {
    *  off (default) keeps it on the cheap batched path. Mark only sparse
    *  foliage/object layers — leave big water/grass fills off for performance. */
   ySort?: boolean;
+  /** When true, BigTile/animated placements on this layer may OVERLAP — a new
+   *  placement does NOT delete existing ones it intersects. For dense Y-sorted
+   *  forests (canopies over neighbors; draw order from Y-sort). Painting drag-
+   *  strokes still space stamps by their base row so a single drag doesn't
+   *  stack copies. Default off = one placement per cell (safe). */
+  allowOverlap?: boolean;
 }
 
 /**

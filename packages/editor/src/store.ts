@@ -4298,11 +4298,16 @@ export const useEditor = create<EditorState>((set, get) => ({
             ...m,
             layers: m.layers.map((L) => {
               if (L.id !== layerId) return L;
-              const existing = (L.bigTilePlacements ?? []).filter((p) => {
-                const pBt = findBt(p.bigTileId);
-                if (!pBt) return true;
-                return !cellsOverlap(pBt, p.c, p.r);
-              });
+              // allowOverlap layers stack placements freely — no dedup (dense
+              // forests; drag gates prevent same-stroke stacking, Y-sort
+              // resolves draw order).
+              const existing = L.allowOverlap
+                ? (L.bigTilePlacements ?? [])
+                : (L.bigTilePlacements ?? []).filter((p) => {
+                    const pBt = findBt(p.bigTileId);
+                    if (!pBt) return true;
+                    return !cellsOverlap(pBt, p.c, p.r);
+                  });
               return { ...L, bigTilePlacements: [...existing, { id, bigTileId, c, r }] };
             }),
           };

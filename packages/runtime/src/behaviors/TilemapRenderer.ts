@@ -47,6 +47,9 @@ interface InputLayer {
    *  batched path. Lets a map keep big water/grass fills batched while only a
    *  sparse foliage layer pays the per-cell cost. */
   ySort?: boolean;
+  /** When true, BigTile/animated placements on this layer may OVERLAP — a new
+   *  placement does NOT destroy the ones it intersects (dense Y-sorted forests). */
+  allowOverlap?: boolean;
 }
 
 /** One tileset in the map's ordered list — its Phaser texture key, the global
@@ -2297,10 +2300,12 @@ export class TilemapRenderer extends Behavior {
       return false;
     };
     const collidingIds: string[] = [];
-    for (const p of L.bigTilePlacements ?? []) {
-      const pBt = this.bigTiles[p.bigTileId];
-      if (!pBt) continue;
-      if (bboxHit(p.c, p.r, pBt.w, pBt.h) && cellsHit(pBt, p)) collidingIds.push(p.id);
+    if (!L.allowOverlap) {
+      for (const p of L.bigTilePlacements ?? []) {
+        const pBt = this.bigTiles[p.bigTileId];
+        if (!pBt) continue;
+        if (bboxHit(p.c, p.r, pBt.w, pBt.h) && cellsHit(pBt, p)) collidingIds.push(p.id);
+      }
     }
     for (const id of collidingIds) this._destroyBigTilePlacement(L, id);
     const id = `bp_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;

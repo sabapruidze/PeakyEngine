@@ -2020,6 +2020,7 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
             alpha: L.alpha ?? 1,
             visible: L.visible !== false,
             collides: L.collides !== false,
+            allowOverlap: L.allowOverlap === true,
             // Clone the placements list too — Tier 3 BigTile actions will mutate
             // it (RemoveBigTile / PlaceBigTile); keep editor data untouched.
             bigTilePlacements: (L.bigTilePlacements ?? []).map((p) => ({ ...p })),

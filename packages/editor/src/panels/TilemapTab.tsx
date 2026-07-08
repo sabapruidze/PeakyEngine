@@ -332,10 +332,17 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     // dropped on row 0 doesn't anchor at a negative row (off-map / invisible).
     const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    // Occupied cells honor the sparse mask (trunk-only) — full rect otherwise.
+    // Stroke gate. On an OVERLAP layer only the BASE ROW counts (trunk line) —
+    // canopies overlap freely while a drag still can't stack two trees on the
+    // same footing. Otherwise the full occupied footprint gates (sparse mask
+    // honored; full rect when unmasked).
+    const layerOverlap = tilemap.layers.find((L) => L.id === activeId)?.allowOverlap === true;
     const masked = bt.cells && bt.cells.length > 0 && bt.cells.length < bt.w * bt.h;
     const occ: string[] = [];
-    if (masked) for (const cc of bt.cells!) occ.push(`${anchorC + cc.c},${anchorR + cc.r}`);
+    if (layerOverlap) {
+      const baseR = anchorR + bt.h - 1;
+      for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${baseR}`);
+    } else if (masked) for (const cc of bt.cells!) occ.push(`${anchorC + cc.c},${anchorR + cc.r}`);
     else for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${anchorR + dr}`);
     for (const k of occ) if (randStrokeCells.current.has(k)) return;
     for (const k of occ) randStrokeCells.current.add(k);
@@ -1034,6 +1041,12 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
               <Toggle
                 value={activeLayer.ySort === true}
                 onChange={(v) => updateTilemapLayer(tilemap.id, activeLayer.id, { ySort: v })}
+                style={{ width: "auto", justifySelf: "start" }}
+              />
+              <span title="Let BigTile placements OVERLAP on this layer — a new tree doesn't delete the one it covers. For dense Y-sorted forests (pair with Y-sort so lower trees draw in front). Drag-painting still spaces stamps by their base row.">Overlap</span>
+              <Toggle
+                value={activeLayer.allowOverlap === true}
+                onChange={(v) => updateTilemapLayer(tilemap.id, activeLayer.id, { allowOverlap: v })}
                 style={{ width: "auto", justifySelf: "start" }}
               />
             </div>
