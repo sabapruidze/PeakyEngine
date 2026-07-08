@@ -1793,6 +1793,7 @@ function PaintCanvas({
     alpha: number;
     visible: boolean;
     collides?: boolean;
+    ySort?: boolean;
     bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number }[];
     animatedTilePlacements?: { id: string; animatedTileId: string; c: number; r: number }[];
   }[];
