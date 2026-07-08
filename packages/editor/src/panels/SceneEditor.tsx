@@ -2569,7 +2569,17 @@ function ScenePlacedTilemap({
       // specific tileset; a map may mix several). Matches what the runtime
       // spawns (one composite Image). Drawn at the MAP cell size so a BigTile
       // from a differently-sized tileset still tiles cleanly.
-      for (const placement of ((L as any).bigTilePlacements ?? [])) {
+      // Y-sort layers draw placements in BASE-Y order (lower bases on top) so
+      // the scene preview matches the runtime's forest layering.
+      const lPlacements = [...(((L as { bigTilePlacements?: { bigTileId: string; c: number; r: number }[]; ySort?: boolean }).bigTilePlacements) ?? [])];
+      if ((L as { ySort?: boolean }).ySort) {
+        const hOf = (bid: string) => {
+          const o = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === bid));
+          return o?.ts.bigTiles?.find((b) => b.id === bid)?.h ?? 1;
+        };
+        lPlacements.sort((a, b) => (a.r + hOf(a.bigTileId)) - (b.r + hOf(b.bigTileId)));
+      }
+      for (const placement of lPlacements) {
         const owner = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === placement.bigTileId));
         if (!owner) continue;
         const ots = owner.ts;

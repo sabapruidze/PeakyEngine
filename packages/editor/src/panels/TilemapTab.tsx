@@ -1926,10 +1926,16 @@ function PaintCanvas({
       // its OWNING tileset (a map can mix several), overlaid on the regular
       // cells. Drawn at the MAP cell size so a BigTile from a differently-sized
       // tileset still tiles cleanly. Matches what the runtime spawns.
-      for (const placement of L.bigTilePlacements ?? []) {
+      // On a Y-SORT layer, draw in BASE-Y order (lower bases later = on top) so
+      // the editor preview matches the runtime's Y-sorted forest layering.
+      const resolvedPlacements = (L.bigTilePlacements ?? []).map((placement) => {
         const owner = slots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === placement.bigTileId));
         const oImg = owner ? imgsRef.current.get(owner.ts.id) : undefined;
         const bt = owner?.ts.bigTiles?.find((b) => b.id === placement.bigTileId);
+        return { placement, owner, oImg, bt };
+      });
+      if (L.ySort) resolvedPlacements.sort((a, b) => (a.placement.r + (a.bt?.h ?? 1)) - (b.placement.r + (b.bt?.h ?? 1)));
+      for (const { placement, owner, oImg, bt } of resolvedPlacements) {
         if (!owner || !oImg || !oImg.complete || !bt) continue;
         const ots = owner.ts;
         const sx = ots.offsetX + bt.c * (ots.tileW + ots.spacingX);
