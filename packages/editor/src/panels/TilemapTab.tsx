@@ -158,9 +158,11 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
    *  first placement so drag-painting tiles composites side-by-side instead of
    *  overlap-deleting the previous stamp (placeBigTile destroys overlaps). */
   const bigStroke = useRef<{ oc: number; or: number; placed: Set<string> } | null>(null);
-  /** Randomize-brush stroke: footprints of composites placed THIS stroke —
-   *  overlapping candidates are skipped (mixed-size pools can't grid-snap). */
-  const randStrokeRects = useRef<Array<{ c: number; r: number; w: number; h: number }>>([]);
+  /** Randomize-brush stroke: OCCUPIED cells of composites placed THIS stroke —
+   *  overlapping candidates are skipped (mixed-size pools can't grid-snap).
+   *  Honors the sparse `cells` mask, so trunk-only trees pack densely with
+   *  overhanging canopies (the Y-sorted-forest brush). */
+  const randStrokeCells = useRef<Set<string>>(new Set());
 
   // Ordered tileset list (primary + extras) with firstgids.
   const gidSlots = useMemo(() => (tilemap ? tilemapTilesets(tilemap, tilesets) : []), [tilemap, tilesets]);
@@ -330,10 +332,13 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     // dropped on row 0 doesn't anchor at a negative row (off-map / invisible).
     const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    for (const r of randStrokeRects.current) {
-      if (anchorC < r.c + r.w && anchorC + bt.w > r.c && anchorR < r.r + r.h && anchorR + bt.h > r.r) return;
-    }
-    randStrokeRects.current.push({ c: anchorC, r: anchorR, w: bt.w, h: bt.h });
+    // Occupied cells honor the sparse mask (trunk-only) — full rect otherwise.
+    const masked = bt.cells && bt.cells.length > 0 && bt.cells.length < bt.w * bt.h;
+    const occ: string[] = [];
+    if (masked) for (const cc of bt.cells!) occ.push(`${anchorC + cc.c},${anchorR + cc.r}`);
+    else for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${anchorR + dr}`);
+    for (const k of occ) if (randStrokeCells.current.has(k)) return;
+    for (const k of occ) randStrokeCells.current.add(k);
     placeBigTile(tilemap.id, activeId, id, anchorC, anchorR);
   };
 
@@ -546,7 +551,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     dragging.current = true;
     lastStamp.current = null;
     bigStroke.current = null;
-    randStrokeRects.current = [];
+    randStrokeCells.current = new Set();
     if (tool === "rect") {
       setRectDrag({ c0: col, r0: row, c1: col, r1: row });
       return;
@@ -683,7 +688,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         dragging.current = false;
         lastStamp.current = null;
         bigStroke.current = null;
-        randStrokeRects.current = [];
+        randStrokeCells.current = new Set();
         return;
       }
       if (activeTerrain && activeLayer) {
@@ -743,7 +748,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     dragging.current = false;
     lastStamp.current = null;
     bigStroke.current = null;
-    randStrokeRects.current = [];
+    randStrokeCells.current = new Set();
   };
 
   return (

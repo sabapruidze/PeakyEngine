@@ -4270,11 +4270,24 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!bt) return "";
     // Dedup overlap — without this, every click stacks a fresh placement on top
     // of any existing BigTile that covers the same cells. Drop existing
-    // placements whose footprint intersects the new one. Placements whose def
-    // can't be found are KEPT (never delete data we can't measure).
-    const overlaps = (a: { c: number; r: number; w: number; h: number }, b: { c: number; r: number; w: number; h: number }) =>
-      a.c < b.c + b.w && a.c + a.w > b.c && a.r < b.r + b.h && a.r + a.h > b.r;
-    const newRect = { c, r, w: bt.w, h: bt.h };
+    // placements whose OCCUPIED cells intersect the new one's. Occupied honors
+    // the sparse `cells` mask (a tree occupying trunk-only cells lets canopies
+    // OVERHANG each other — dense Y-sorted forests); no mask = the full w×h
+    // rect. Placements whose def can't be found are KEPT (never delete data we
+    // can't measure).
+    const occupied = (b: { w: number; h: number; cells?: { c: number; r: number }[] }, ac: number, ar: number): Array<[number, number]> => {
+      if (b.cells && b.cells.length > 0 && b.cells.length < b.w * b.h) return b.cells.map((cc) => [ac + cc.c, ar + cc.r]);
+      const out: Array<[number, number]> = [];
+      for (let dr = 0; dr < b.h; dr++) for (let dc = 0; dc < b.w; dc++) out.push([ac + dc, ar + dr]);
+      return out;
+    };
+    const newCells = new Set(occupied(bt, c, r).map(([cc, rr]) => `${cc},${rr}`));
+    const cellsOverlap = (pBt: { w: number; h: number; cells?: { c: number; r: number }[] }, pc: number, pr: number): boolean => {
+      // Cheap bbox reject first — cell scan only when boxes intersect.
+      if (!(c < pc + pBt.w && c + bt.w > pc && r < pr + pBt.h && r + bt.h > pr)) return false;
+      for (const [cc, rr] of occupied(pBt, pc, pr)) if (newCells.has(`${cc},${rr}`)) return true;
+      return false;
+    };
     const id = newId("bp");
     set((s) => ({
       project: {
@@ -4288,7 +4301,7 @@ export const useEditor = create<EditorState>((set, get) => ({
               const existing = (L.bigTilePlacements ?? []).filter((p) => {
                 const pBt = findBt(p.bigTileId);
                 if (!pBt) return true;
-                return !overlaps(newRect, { c: p.c, r: p.r, w: pBt.w, h: pBt.h });
+                return !cellsOverlap(pBt, p.c, p.r);
               });
               return { ...L, bigTilePlacements: [...existing, { id, bigTileId, c, r }] };
             }),

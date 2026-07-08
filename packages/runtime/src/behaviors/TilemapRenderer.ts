@@ -2277,17 +2277,30 @@ export class TilemapRenderer extends Behavior {
     }
     if (!bt) return null;
     if (c < 0 || r < 0 || c + bt.w > this.cols || r + bt.h > this.rows) return null;
-    // Destroy any existing placement whose footprint intersects the new one
-    // — single source of truth on the cell range. Without this, repeated
+    // Destroy any existing placement whose OCCUPIED cells intersect the new
+    // one's — single source of truth per cell. Without this, repeated
     // PlaceBigTile actions from a logic sheet stack identical sprites.
-    const overlaps = (a: { c: number; r: number; w: number; h: number }, b: { c: number; r: number; w: number; h: number }) =>
-      a.c < b.c + b.w && a.c + a.w > b.c && a.r < b.r + b.h && a.r + a.h > b.r;
-    const newRect = { c, r, w: bt.w, h: bt.h };
+    // Occupied honors the sparse `cells` mask (trunk-only trees let canopies
+    // overhang → dense Y-sorted forests); no mask = the full w×h rect.
+    // Mirrors the editor store's placeBigTile rule.
+    const bboxHit = (pc: number, pr: number, pw: number, ph: number) =>
+      c < pc + pw && c + bt.w > pc && r < pr + ph && r + bt.h > pr;
+    const newPlacement = { c, r };
+    const cellsHit = (pBt: typeof bt, p: { c: number; r: number }): boolean => {
+      // Cell-level test only when the bboxes intersect (cheap reject first).
+      // Walk the SMALLER mask and ask _bigTileCovers on the other.
+      for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) {
+        const ac = c + dc, ar = r + dr;
+        if (!this._bigTileCovers(bt, newPlacement, ac, ar)) continue;
+        if (this._bigTileCovers(pBt, p, ac, ar)) return true;
+      }
+      return false;
+    };
     const collidingIds: string[] = [];
     for (const p of L.bigTilePlacements ?? []) {
       const pBt = this.bigTiles[p.bigTileId];
       if (!pBt) continue;
-      if (overlaps(newRect, { c: p.c, r: p.r, w: pBt.w, h: pBt.h })) collidingIds.push(p.id);
+      if (bboxHit(p.c, p.r, pBt.w, pBt.h) && cellsHit(pBt, p)) collidingIds.push(p.id);
     }
     for (const id of collidingIds) this._destroyBigTilePlacement(L, id);
     const id = `bp_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
