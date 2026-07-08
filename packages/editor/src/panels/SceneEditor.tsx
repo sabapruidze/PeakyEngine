@@ -2577,7 +2577,7 @@ function ScenePlacedTilemap({
           const o = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === bid));
           return o?.ts.bigTiles?.find((b) => b.id === bid)?.h ?? 1;
         };
-        lPlacements.sort((a, b) => (a.r + hOf(a.bigTileId)) - (b.r + hOf(b.bigTileId)));
+        lPlacements.sort((a, b) => ((a.r + hOf(a.bigTileId)) * ts.tileH + ((a as { oy?: number }).oy ?? 0)) - ((b.r + hOf(b.bigTileId)) * ts.tileH + ((b as { oy?: number }).oy ?? 0)));
       }
       for (const placement of lPlacements) {
         const owner = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === placement.bigTileId));
@@ -2594,8 +2594,10 @@ function ScenePlacedTilemap({
         // Render at the OWNING tileset's true size (no squish), top-left anchored.
         const dw = bt.w * ots.tileW * scale;
         const dh = bt.h * ots.tileH * scale;
-        const dx = placement.c * ts.tileW * scale;
-        const dy = placement.r * ts.tileH * scale;
+        const px = (placement as { ox?: number }).ox ?? 0;
+        const py = (placement as { oy?: number }).oy ?? 0;
+        const dx = (placement.c * ts.tileW + px) * scale;
+        const dy = (placement.r * ts.tileH + py) * scale;
         ctx.drawImage(oImg, sx, sy, sw, sh, dx, dy, dw, dh);
       }
       // Animated-tile placements — static first-frame preview (the scene

@@ -34,8 +34,9 @@ interface InputLayer {
   visible: boolean;
   collides: boolean;
   /** BigTile placements — instances of tileset BigTiles painted into this
-   *  layer. Each renders as ONE sprite and Y-sorts as one unit. */
-  bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number }[];
+   *  layer. Each renders as ONE sprite and Y-sorts as one unit. `ox`/`oy` are
+   *  optional VISUAL px offsets (Scatter) — collision/mining stay cell-aligned. */
+  bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number; ox?: number; oy?: number }[];
   animatedTilePlacements?: { id: string; animatedTileId: string; c: number; r: number }[];
   /** Tags propagated to every per-tile image in this layer — VisionMask
    *  reads these to decide whether to fade. Tag a ground layer "ground"
@@ -758,8 +759,8 @@ export class TilemapRenderer extends Behavior {
           const srcTH = bt._src?.tileH ?? this.tileH;
           const wPx = bt.w * srcTW;
           const hPx = bt.h * srcTH;
-          const worldX = layerLeft + placement.c * this.tileW + wPx / 2;
-          const worldY = layerTop + placement.r * this.tileH + hPx / 2;
+          const worldX = layerLeft + placement.c * this.tileW + wPx / 2 + (placement.ox ?? 0);
+          const worldY = layerTop + placement.r * this.tileH + hPx / 2 + (placement.oy ?? 0);
           const img = this._addBigTileImage(scene, worldX, worldY, bt);
           img.setOrigin(0.5, 0.5);
           // Depth = trunk-base Y (natural Y-sort point for tall objects) plus
@@ -923,8 +924,8 @@ export class TilemapRenderer extends Behavior {
             const srcTH = bt._src?.tileH ?? this.tileH;
             const wPx = bt.w * srcTW;
             const hPx = bt.h * srcTH;
-            const worldX = layerLeft + placement.c * this.tileW + wPx / 2;
-            const worldY = layerTop + placement.r * this.tileH + hPx / 2;
+            const worldX = layerLeft + placement.c * this.tileW + wPx / 2 + (placement.ox ?? 0);
+            const worldY = layerTop + placement.r * this.tileH + hPx / 2 + (placement.oy ?? 0);
             const img = this._addBigTileImage(scene, worldX, worldY, bt);
             img.setOrigin(0.5, 0.5);
             // A HAIR above the layer's flat tiles (same layer) so the composite
@@ -2351,7 +2352,7 @@ export class TilemapRenderer extends Behavior {
   /** Internal: spawn one placement's Image + (optional) collision body,
    *  mirroring the init-time code paths (Y-sort vs standard). Called by
    *  `placeBigTile` for runtime additions. */
-  private _spawnBigTilePlacement(L: InputLayer, placement: { id: string; bigTileId: string; c: number; r: number }): void {
+  private _spawnBigTilePlacement(L: InputLayer, placement: { id: string; bigTileId: string; c: number; r: number; ox?: number; oy?: number }): void {
     const bt = this.bigTiles[placement.bigTileId];
     if (!bt) return;
     const scene = this.sprite.scene;
@@ -2362,8 +2363,8 @@ export class TilemapRenderer extends Behavior {
     const srcTH = bt._src?.tileH ?? this.tileH;
     const wPx = bt.w * srcTW;
     const hPx = bt.h * srcTH;
-    const worldX = this._layerLeft + placement.c * this.tileW + wPx / 2;
-    const worldY = this._layerTop + placement.r * this.tileH + hPx / 2;
+    const worldX = this._layerLeft + placement.c * this.tileW + wPx / 2 + (placement.ox ?? 0);
+    const worldY = this._layerTop + placement.r * this.tileH + hPx / 2 + (placement.oy ?? 0);
     const img = this._addBigTileImage(scene, worldX, worldY, bt);
     img.setOrigin(0.5, 0.5);
     // Use the same depth formula as the matching init path (Y-sort uses

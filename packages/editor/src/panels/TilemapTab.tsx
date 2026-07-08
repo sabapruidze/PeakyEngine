@@ -125,6 +125,11 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // Mutually exclusive with terrain / BigTile / Animated selection — enabling
   // any of those clears Randomize, and enabling Randomize clears those.
   const [randomMode, setRandomMode] = useState(false);
+  // Scatter — random ±px visual offset on each BigTile the Randomize brush
+  // places (organic forests instead of grid-perfect trees). Visual only:
+  // collision/mining stay cell-aligned.
+  const [randScatter, setRandScatter] = useState(false);
+  const [randScatterPx, setRandScatterPx] = useState(8);
   // Random pool entries are EITHER a palette cell (c,r) or a BigTile (id).
   // Picking one at paint time places a random tile or a random BigTile.
   const [randomPool, setRandomPool] = useState<PoolEntry[]>([]);
@@ -346,7 +351,11 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     else for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${anchorR + dr}`);
     for (const k of occ) if (randStrokeCells.current.has(k)) return;
     for (const k of occ) randStrokeCells.current.add(k);
-    placeBigTile(tilemap.id, activeId, id, anchorC, anchorR);
+    // Scatter: random visual px offset per placement (choosable ± amount).
+    const jitter = randScatter && randScatterPx > 0
+      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterPx), oy: Math.round((Math.random() * 2 - 1) * randScatterPx) }
+      : undefined;
+    placeBigTile(tilemap.id, activeId, id, anchorC, anchorR, jitter?.ox, jitter?.oy);
   };
 
   /** Stamp ONE cell with a randomly-picked pool entry (tile OR BigTile). Used
@@ -1122,6 +1131,21 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
           </label>
           {randomMode && (
             <>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, cursor: "pointer", color: "var(--text-2)" }}
+                title="Give each placed BigTile a random ± pixel offset — organic scatter instead of grid-perfect trees. Visual only: collision stays on the grid.">
+                <Toggle value={randScatter} onChange={setRandScatter} style={{ margin: 0 }} />
+                <span>Scatter (BigTiles)</span>
+                {randScatter && (
+                  <>
+                    <span style={{ color: "var(--text-dim)" }}>±</span>
+                    <input type="number" min={0} max={128} value={randScatterPx}
+                      onChange={(e) => setRandScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                    <span style={{ color: "var(--text-dim)" }}>px</span>
+                  </>
+                )}
+              </label>
               <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
                 Click tiles in the palette to add/remove, or add BigTiles below. Weights are relative.
               </div>
@@ -1794,7 +1818,7 @@ function PaintCanvas({
     visible: boolean;
     collides?: boolean;
     ySort?: boolean;
-    bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number }[];
+    bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number; ox?: number; oy?: number }[];
     animatedTilePlacements?: { id: string; animatedTileId: string; c: number; r: number }[];
   }[];
   /** Ordered tileset list (primary + extras) with firstgids + atlas URLs. */
@@ -1935,7 +1959,7 @@ function PaintCanvas({
         const bt = owner?.ts.bigTiles?.find((b) => b.id === placement.bigTileId);
         return { placement, owner, oImg, bt };
       });
-      if (L.ySort) resolvedPlacements.sort((a, b) => (a.placement.r + (a.bt?.h ?? 1)) - (b.placement.r + (b.bt?.h ?? 1)));
+      if (L.ySort) resolvedPlacements.sort((a, b) => ((a.placement.r + (a.bt?.h ?? 1)) * tileH + (a.placement.oy ?? 0)) - ((b.placement.r + (b.bt?.h ?? 1)) * tileH + (b.placement.oy ?? 0)));
       for (const { placement, owner, oImg, bt } of resolvedPlacements) {
         if (!owner || !oImg || !oImg.complete || !bt) continue;
         const ots = owner.ts;
@@ -1950,8 +1974,8 @@ function PaintCanvas({
         // tile grows DOWN/RIGHT from where you clicked (stays on-screen).
         const dw = bt.w * ots.tileW * zoom;
         const dh = bt.h * ots.tileH * zoom;
-        const dx = placement.c * tileW * zoom;
-        const dy = placement.r * tileH * zoom;
+        const dx = (placement.c * tileW + (placement.ox ?? 0)) * zoom;
+        const dy = (placement.r * tileH + (placement.oy ?? 0)) * zoom;
         ctx.drawImage(oImg, sx, sy, sw, sh, dx, dy, dw, dh);
         // Faint green outline so authors see placement boundaries.
         ctx.strokeStyle = "rgba(120,210,120,0.7)";
