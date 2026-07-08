@@ -129,7 +129,8 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // places (organic forests instead of grid-perfect trees). Visual only:
   // collision/mining stay cell-aligned.
   const [randScatter, setRandScatter] = useState(false);
-  const [randScatterPx, setRandScatterPx] = useState(8);
+  const [randScatterX, setRandScatterX] = useState(8);
+  const [randScatterY, setRandScatterY] = useState(8);
   // Random pool entries are EITHER a palette cell (c,r) or a BigTile (id).
   // Picking one at paint time places a random tile or a random BigTile.
   const [randomPool, setRandomPool] = useState<PoolEntry[]>([]);
@@ -352,8 +353,8 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     for (const k of occ) if (randStrokeCells.current.has(k)) return;
     for (const k of occ) randStrokeCells.current.add(k);
     // Scatter: random visual px offset per placement (choosable ± amount).
-    const jitter = randScatter && randScatterPx > 0
-      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterPx), oy: Math.round((Math.random() * 2 - 1) * randScatterPx) }
+    const jitter = randScatter && (randScatterX > 0 || randScatterY > 0)
+      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterX), oy: Math.round((Math.random() * 2 - 1) * randScatterY) }
       : undefined;
     placeBigTile(tilemap.id, activeId, id, anchorC, anchorR, jitter?.ox, jitter?.oy);
   };
@@ -426,8 +427,8 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
         const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
         stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => {
-          const jx = randScatter && randScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * randScatterPx) : undefined;
-          const jy = randScatter && randScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * randScatterPx) : undefined;
+          const jx = randScatter && randScatterX > 0 ? Math.round((Math.random() * 2 - 1) * randScatterX) : undefined;
+          const jy = randScatter && randScatterY > 0 ? Math.round((Math.random() * 2 - 1) * randScatterY) : undefined;
           placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r, jx, jy);
         });
       }
@@ -1139,11 +1140,16 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             <span>Scatter (BigTiles)</span>
             {randScatter && (
               <>
-                <span style={{ color: "var(--text-dim)" }}>±</span>
-                <input type="number" min={0} max={128} value={randScatterPx}
-                  onChange={(e) => setRandScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <span style={{ color: "var(--text-dim)" }}>±X</span>
+                <input type="number" min={0} max={128} value={randScatterX}
+                  onChange={(e) => setRandScatterX(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                  style={{ width: 40, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                <span style={{ color: "var(--text-dim)" }}>±Y</span>
+                <input type="number" min={0} max={128} value={randScatterY}
+                  onChange={(e) => setRandScatterY(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ width: 40, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>px</span>
               </>
             )}

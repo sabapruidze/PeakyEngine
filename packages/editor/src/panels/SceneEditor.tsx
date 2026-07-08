@@ -246,7 +246,8 @@ export function SceneEditor() {
   const [paintBigTileId, setPaintBigTileId] = useState<string | null>(null);
   // Scatter — random ±px visual offset per placed BigTile (organic forests).
   const [paintScatter, setPaintScatter] = useState(false);
-  const [paintScatterPx, setPaintScatterPx] = useState(8);
+  const [paintScatterX, setPaintScatterX] = useState(8);
+  const [paintScatterY, setPaintScatterY] = useState(8);
   const placeBigTile = useEditor((s) => s.placeBigTile);
   const removeBigTilePlacement = useEditor((s) => s.removeBigTilePlacement);
   const [paintRectDrag, setPaintRectDrag] = useState<PaintRectDrag | null>(null);
@@ -389,10 +390,11 @@ export function SceneEditor() {
     const py = bt.pivotY ?? 1;
     const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    const jit = () => (paintScatter && paintScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterPx) : undefined);
+    const jitX = () => (paintScatter && paintScatterX > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterX) : undefined);
+    const jitY = () => (paintScatter && paintScatterY > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterY) : undefined);
     if (!paintBigStroke.current) {
       paintBigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR, jit(), jit());
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR, jitX(), jitY());
       return true;
     }
     const s = paintBigStroke.current;
@@ -401,7 +403,7 @@ export function SceneEditor() {
     const key = `${gc},${gr}`;
     if (!s.placed.has(key)) {
       s.placed.add(key);
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr, jit(), jit());
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr, jitX(), jitY());
     }
     return true;
   };
@@ -2350,8 +2352,10 @@ export function SceneEditor() {
           setXf={setPaintXf}
           scatter={paintScatter}
           setScatter={setPaintScatter}
-          scatterPx={paintScatterPx}
-          setScatterPx={setPaintScatterPx}
+          scatterX={paintScatterX}
+          setScatterX={setPaintScatterX}
+          scatterY={paintScatterY}
+          setScatterY={setPaintScatterY}
           selection={paintSel}
           setSelection={setPaintSel}
           activeLayerId={paintActiveLayerId}
@@ -2885,7 +2889,7 @@ function ScenePlacedTilemap({
  *  reset-zoom toggles in the top-right. */
 function InScenePaintToolbar({
   vpBox, map, tileset, tilesetOptions, activeTilesetId, setActiveTilesetId,
-  tool, setTool, xf, setXf, scatter, setScatter, scatterPx, setScatterPx,
+  tool, setTool, xf, setXf, scatter, setScatter, scatterX, setScatterX, scatterY, setScatterY,
   selection, setSelection, activeLayerId, setActiveLayerId,
   terrainId, setTerrainId, bigTileId, setBigTileId, onClose,
 }: {
@@ -2901,8 +2905,10 @@ function InScenePaintToolbar({
   setXf: (updater: (v: number) => number) => void;
   scatter: boolean;
   setScatter: (v: boolean) => void;
-  scatterPx: number;
-  setScatterPx: (v: number) => void;
+  scatterX: number;
+  setScatterX: (v: number) => void;
+  scatterY: number;
+  setScatterY: (v: number) => void;
   selection: PaintRectDrag;
   setSelection: (s: PaintRectDrag) => void;
   activeLayerId: string;
@@ -3026,11 +3032,16 @@ function InScenePaintToolbar({
             <span>Scatter</span>
             {scatter && (
               <>
-                <span style={{ color: "var(--text-dim)" }}>±</span>
-                <input type="number" min={0} max={128} value={scatterPx}
-                  onChange={(e) => setScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <span style={{ color: "var(--text-dim)" }}>±X</span>
+                <input type="number" min={0} max={128} value={scatterX}
+                  onChange={(e) => setScatterX(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ width: 42, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
+                  style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
+                <span style={{ color: "var(--text-dim)" }}>±Y</span>
+                <input type="number" min={0} max={128} value={scatterY}
+                  onChange={(e) => setScatterY(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>px</span>
               </>
             )}
