@@ -563,6 +563,12 @@ export interface BlueprintInstance {
   y: number;
   /** Optional Door link — turns a Trigger instance into a scene-to-scene door. */
   door?: DoorLink;
+  /** Per-instance COMPONENT param overrides, applied on top of the BP's config
+   *  at spawn. Key = behavior kind ("Collider"), or `Kind#name` when the BP has
+   *  several of the same kind (Tracer/ParticleEmitter, matched by `name`).
+   *  Value = only the overridden param keys. Authored in the Instance
+   *  Inspector's "Component Overrides" section. */
+  behaviorOverrides?: Record<string, Record<string, unknown>>;
   /**
    * Optional per-instance size override. When set, the body rect AND the
    * SpriteRenderer overlay are scaled to these dims (proportionally —

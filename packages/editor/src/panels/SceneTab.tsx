@@ -64,8 +64,13 @@ function SceneWorkspace({
     >
       <div className="card-flush" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <SectionHeader title="Hierarchy" />
-        <div style={{ flex: 1, overflow: "auto", paddingBottom: 6 }}>
+        <div style={{ flex: 1, overflow: "auto", paddingBottom: 6, minHeight: 0 }}>
           <OutlinerPanel />
+        </div>
+        {/* Layers live under the Hierarchy in the LEFT rail (own capped scroll
+            region), leaving the whole right rail to the Inspector. */}
+        <div style={{ flex: "0 0 auto", maxHeight: "45%", overflow: "auto", borderTop: "1px solid var(--border)" }}>
+          <LayersPanel />
         </div>
       </div>
       <Splitter onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx) }))} />
@@ -74,12 +79,6 @@ function SceneWorkspace({
       </div>
       <Splitter onDrag={(dx) => setLayout((l) => ({ ...l, right: clamp(l.right - dx) }))} />
       <div className="card-flush" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-        {/* Layers panel sits above Inspector in the right rail, with its
-            own scroll region so long Inspector content doesn't push it
-            offscreen. Inspector takes the remaining space. */}
-        <div style={{ flex: "0 0 auto", borderBottom: "1px solid var(--border)" }}>
-          <LayersPanel />
-        </div>
         <SectionHeader title="Inspector" />
         <div style={{ flex: 1, overflow: "auto" }}>
           <InstanceInspector />

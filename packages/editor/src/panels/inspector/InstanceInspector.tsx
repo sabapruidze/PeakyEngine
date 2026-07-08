@@ -3,7 +3,8 @@ import { Toggle } from "../../components/Toggle";
 import { useEffect, useState } from "react";
 import { useEditor } from "../../store";
 import type { BlueprintInstance } from "../../project";
-import { TagChips } from "./BlueprintInspector";
+import { TagChips, ParamField } from "./BlueprintInspector";
+import { BEHAVIOR_PARAMS } from "../../behaviorMeta";
 import { FrameThumb } from "../../components/FrameThumb";
 
 /** Numeric input that keeps the user's RAW typing while it's still being
@@ -91,6 +92,9 @@ export function InstanceInspector() {
   const updateSpritePlacement = useEditor((s) => s.updateSpritePlacement);
   const removeSpritePlacement = useEditor((s) => s.removeSpritePlacement);
   const openSpriteTab = useEditor((s) => s.openSpriteTab);
+  // Component-override editor: which of the BP's components is being edited.
+  // "" = none picked (keeps the section compact — a dropdown, not N panels).
+  const [ovComp, setOvComp] = useState("");
 
   // When several items are selected, edits to SHARED properties fan out to ALL
   // of them — not just the primary. `selectedInstanceId` is the universal id
@@ -783,6 +787,84 @@ export function InstanceInspector() {
           </div>
         </div>
       )}
+
+      {bp && bp.behaviors.length > 0 && (() => {
+        // ── Component Overrides ── per-instance param tweaks on top of the BP's
+        // component config. Pick ONE component from the dropdown (compact), edit
+        // its fields; only CHANGED keys are stored on the instance. Key = kind,
+        // or `Kind#name` when the BP carries duplicates of the same kind.
+        const kindCounts = new Map<string, number>();
+        for (const b of bp.behaviors) kindCounts.set(b.kind, (kindCounts.get(b.kind) ?? 0) + 1);
+        const chips = bp.behaviors
+          .filter((b) => (BEHAVIOR_PARAMS[b.kind] ?? []).length > 0)
+          .map((b) => {
+            const bName = String((b.config as Record<string, unknown>).name ?? "");
+            const dup = (kindCounts.get(b.kind) ?? 0) > 1;
+            return { key: dup ? `${b.kind}#${bName}` : b.kind, label: dup && bName ? `${b.kind} "${bName}"` : b.kind, b };
+          });
+        const sel = chips.find((c) => c.key === ovComp);
+        const allOv = inst.behaviorOverrides ?? {};
+        const compOv = sel ? (allOv[sel.key] ?? {}) : {};
+        const writeOv = (pKey: string, v: unknown) => {
+          if (!sel) return;
+          const next = { ...allOv, [sel.key]: { ...compOv, [pKey]: v } };
+          update(inst.id, { behaviorOverrides: next });
+        };
+        const clearField = (pKey: string) => {
+          if (!sel) return;
+          const nextComp = { ...compOv };
+          delete nextComp[pKey];
+          const next = { ...allOv };
+          if (Object.keys(nextComp).length > 0) next[sel.key] = nextComp;
+          else delete next[sel.key];
+          update(inst.id, { behaviorOverrides: Object.keys(next).length > 0 ? next : undefined });
+        };
+        const overriddenComps = Object.keys(allOv);
+        return (
+          <div className="section">
+            <div className="title">Component Overrides{overriddenComps.length > 0 ? ` (${overriddenComps.length})` : ""}</div>
+            <div style={{ padding: "0 12px 6px", fontSize: 10, color: "var(--text-dim)", lineHeight: 1.4 }}>
+              Change component settings for THIS instance only. Pick a component; edged fields (●) are overridden — click ✕ to reset one back to the Blueprint's value.
+            </div>
+            <div className="field">
+              <label>Component</label>
+              <select value={ovComp} onChange={(e) => setOvComp(e.target.value)}>
+                <option value="">— pick component —</option>
+                {chips.map((c) => (
+                  <option key={c.key} value={c.key}>{c.label}{allOv[c.key] ? ` ● (${Object.keys(allOv[c.key]).length})` : ""}</option>
+                ))}
+              </select>
+            </div>
+            {sel && (BEHAVIOR_PARAMS[sel.b.kind] ?? []).map((p) => {
+              const isOv = Object.prototype.hasOwnProperty.call(compOv, p.key);
+              const bpVal = (sel.b.config as Record<string, unknown>)[p.key];
+              const value = isOv ? compOv[p.key] : (bpVal ?? p.default);
+              return (
+                <div key={p.key} style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 4px", background: isOv ? "rgba(232,181,31,0.07)" : "transparent" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <ParamField
+                      paramKey={p.key}
+                      label={`${isOv ? "● " : ""}${p.label}`}
+                      type={p.type}
+                      options={p.options}
+                      value={value}
+                      sprites={sprites}
+                      currentSpriteId={String((bp.behaviors.find((b) => b.kind === "SpriteRenderer")?.config as Record<string, unknown> | undefined)?.spriteId ?? "")}
+                      uiWidgets={uiWidgets}
+                      inputActions={inputActions}
+                      onChange={(v) => writeOv(p.key, v)}
+                    />
+                  </div>
+                  {isOv && (
+                    <button title="Reset this field to the Blueprint's value" onClick={() => clearField(p.key)}
+                      style={{ fontSize: 11, padding: "1px 5px", cursor: "pointer", background: "transparent", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text-dim)", flex: "0 0 auto" }}>✕</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {(() => {
         // Per-instance sprite asset / animation / frame override.

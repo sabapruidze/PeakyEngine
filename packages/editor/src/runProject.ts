@@ -1038,6 +1038,7 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
       instSpriteFrame?: number,
       instSpriteId?: string,
       instTiledBg?: BlueprintInstance["tiledBg"],
+      instBehaviorOverrides?: Record<string, Record<string, unknown>>,
     ): Sprite | null => {
       if (!bp) return null;
       // Universal scale ratio — applied consistently to body, visual, and
@@ -1196,7 +1197,18 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
       // and the SR's `solid` maps to passThrough. Skipped if the BP already has
       // a Collider (the author's explicit one wins).
       const srForCol = bp.behaviors.find((b) => b.kind === "SpriteRenderer");
-      const effectiveBehaviors = [...bp.behaviors];
+      // Per-instance component overrides — merged ON TOP of the BP's config
+      // BEFORE the special-case branches below, so scale folding / SR config
+      // building all read the overridden values naturally. Keyed by kind, or
+      // `Kind#name` when a BP carries several of the same kind (Tracer,
+      // ParticleEmitter — matched by the behavior's `name` field).
+      const withOverrides = (b: (typeof bp.behaviors)[number]) => {
+        if (!instBehaviorOverrides) return b;
+        const bName = String((b.config as Record<string, unknown>).name ?? "");
+        const ov = instBehaviorOverrides[`${b.kind}#${bName}`] ?? instBehaviorOverrides[b.kind];
+        return ov ? { ...b, config: { ...b.config, ...ov } } : b;
+      };
+      const effectiveBehaviors = bp.behaviors.map(withOverrides);
       if (srForCol && Number(srForCol.config.useFrameCollider) === 1
           && !bp.behaviors.some((b) => b.kind === "Collider")) {
         // The Collider sizes the body to the per-frame hitbox (frameColliderRect)
@@ -1778,7 +1790,7 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
         console.warn(`Skipping instance ${inst.id}: blueprint ${inst.blueprintId} not found`);
         continue;
       }
-      const sprite = spawnFromBlueprint(bp, inst.x, inst.y, inst.layerId, inst.w, inst.h, inst.vars, inst.z, inst.tags, inst.spriteAnimation, inst.spriteFrame, inst.spriteId, inst.tiledBg);
+      const sprite = spawnFromBlueprint(bp, inst.x, inst.y, inst.layerId, inst.w, inst.h, inst.vars, inst.z, inst.tags, inst.spriteAnimation, inst.spriteFrame, inst.spriteId, inst.tiledBg, inst.behaviorOverrides);
       // Stable id (for persistent removal / save-load) + per-instance display
       // label (set in Instance Inspector) so dialogue / events / persistence
       // can target THIS specific placement.
