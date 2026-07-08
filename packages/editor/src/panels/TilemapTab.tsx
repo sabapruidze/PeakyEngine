@@ -130,8 +130,17 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // collision/mining stay cell-aligned.
   const [randScatter, setRandScatter] = useState(false);
   // Scatter amounts are in CELLS (fractions ok; converted to px at placement).
-  const [randScatterX, setRandScatterX] = useState(0.5);
-  const [randScatterY, setRandScatterY] = useState(0.5);
+  const [randScatterX, setRandScatterX] = useState(1);
+  const [randScatterY, setRandScatterY] = useState(1);
+  // Scatter shifts a placement by a random WHOLE-CELL amount: magnitude 1..n,
+  // random direction, never 0 - a scattered placement is always off its grid
+  // spot. Placements stay on the grid, so collision moves with them.
+  const cellJit = (amt: number) => {
+    if (!randScatter || amt <= 0) return 0;
+    const a = Math.round(amt);
+    const mag = 1 + Math.floor(Math.random() * a);
+    return Math.random() < 0.5 ? -mag : mag;
+  };
   // Random pool entries are EITHER a palette cell (c,r) or a BigTile (id).
   // Picking one at paint time places a random tile or a random BigTile.
   const [randomPool, setRandomPool] = useState<PoolEntry[]>([]);
@@ -337,8 +346,8 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     const py = bt.pivotY ?? 1;
     // Clamp the pivot-adjusted anchor into bounds so a bottom-pivoted door
     // dropped on row 0 doesn't anchor at a negative row (off-map / invisible).
-    const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
-    const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
+    const anchorC = Math.max(0, Math.min(cols - bt.w, col + cellJit(randScatterX) - Math.min(bt.w - 1, Math.floor(px * bt.w))));
+    const anchorR = Math.max(0, Math.min(rows - bt.h, row + cellJit(randScatterY) - Math.min(bt.h - 1, Math.floor(py * bt.h))));
     // Gate policy:
     //  - OVERLAP layer: only the BASE ROW counts (trunk line) — canopies overlap
     //    freely, but neither a drag NOR a batch fill stacks trees on one footing.
@@ -358,12 +367,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     }
     for (const k of occ) if (randStrokeCells.current.has(k)) return;
     for (const k of occ) randStrokeCells.current.add(k);
-    // Scatter: random visual px offset per placement (choosable ± amount).
-    const cw = tileset?.tileW ?? 32, ch = tileset?.tileH ?? 32;
-    const jitter = randScatter && (randScatterX > 0 || randScatterY > 0)
-      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterX * cw), oy: Math.round((Math.random() * 2 - 1) * randScatterY * ch) }
-      : undefined;
-    placeBigTile(tilemap.id, activeId, id, anchorC, anchorR, jitter?.ox, jitter?.oy);
+    placeBigTile(tilemap.id, activeId, id, anchorC, anchorR);
   };
 
   /** Stamp ONE cell with a randomly-picked pool entry (tile OR BigTile). Used
@@ -434,9 +438,9 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
         const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
         stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => {
-          const jx = randScatter && randScatterX > 0 ? Math.round((Math.random() * 2 - 1) * randScatterX * (tileset?.tileW ?? 32)) : undefined;
-          const jy = randScatter && randScatterY > 0 ? Math.round((Math.random() * 2 - 1) * randScatterY * (tileset?.tileH ?? 32)) : undefined;
-          placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r, jx, jy);
+          const jc = Math.max(0, Math.min(cols - bt.w, c + cellJit(randScatterX)));
+          const jr = Math.max(0, Math.min(rows - bt.h, r + cellJit(randScatterY)));
+          placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, jc, jr);
         });
       }
       return true;
@@ -557,6 +561,54 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     }
   };
 
+  // Bucket + a directly-selected BigTile/Animated tile: flood the connected
+  // same-tile region, then lay the BigTile on its footprint grid (scatter
+  // jitter applies) / the animated tile per cell. Mirrors the Rect fill but
+  // bounded by the flood region instead of a drag box.
+  const bucketFillPlacements = (col: number, row: number) => {
+    if (!activeLayer || !activeId) return;
+    const target = activeLayer.tiles[row * cols + col] ?? -1;
+    const region = new Set<number>();
+    const stack: number[] = [col, row];
+    while (stack.length > 0) {
+      const r = stack.pop()!;
+      const c = stack.pop()!;
+      if (c < 0 || c >= cols || r < 0 || r >= rows) continue;
+      const i = r * cols + c;
+      if (region.has(i)) continue;
+      if ((activeLayer.tiles[i] ?? -1) !== target) continue;
+      region.add(i);
+      stack.push(c + 1, r); stack.push(c - 1, r);
+      stack.push(c, r + 1); stack.push(c, r - 1);
+    }
+    let cMin = cols, cMax = -1, rMin = rows, rMax = -1;
+    for (const i of region) {
+      const c = i % cols, r = (i - c) / cols;
+      if (c < cMin) cMin = c; if (c > cMax) cMax = c;
+      if (r < rMin) rMin = r; if (r > rMax) rMax = r;
+    }
+    if (cMax < 0) return;
+    if (selectedBigTileId) {
+      const bt = (tileset?.bigTiles ?? []).find((b) => b.id === selectedBigTileId);
+      if (!bt) return;
+      const stepC = Math.max(1, bt.w), stepR = Math.max(1, bt.h);
+      for (let r = rMin; r + stepR - 1 <= rMax; r += stepR) {
+        for (let c = cMin; c + stepC - 1 <= cMax; c += stepC) {
+          if (!region.has(r * cols + c)) continue;
+          if (Math.random() >= randomDensity) continue;
+          const jc = Math.max(0, Math.min(cols - bt.w, c + cellJit(randScatterX)));
+          const jr = Math.max(0, Math.min(rows - bt.h, r + cellJit(randScatterY)));
+          placeBigTile(tilemap.id, activeId, selectedBigTileId, jc, jr);
+        }
+      }
+    } else if (selectedAnimatedTileId) {
+      for (const i of region) {
+        const c = i % cols, r = (i - c) / cols;
+        placeAnimatedTile(tilemap.id, activeId, selectedAnimatedTileId, c, r);
+      }
+    }
+  };
+
   const onCanvasDown = (col: number, row: number, e: React.MouseEvent) => {
     e.preventDefault();
     if (!activeLayer) return;
@@ -570,7 +622,12 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
       // drag-stroke both work (no more clicking each placement individually).
     } else if (selectedBigTileId || selectedAnimatedTileId) {
       // BigTile / Animated placement. Brush (stroke-paint) and Rect (area-fill)
-      // flow through the drag machinery below; Bucket / Picker single-place.
+      // flow through the drag machinery below; Bucket area-fills the flooded
+      // region; Picker single-places.
+      if (tool === "bucket") {
+        bucketFillPlacements(col, row);
+        return;
+      }
       if (tool !== "brush" && tool !== "rect") {
         placeBigOrAnimatedAt(col, row);
         return;
@@ -701,9 +758,13 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
           // of composites instead of stacking one per cell.
           const bt = (tileset?.bigTiles ?? []).find((b) => b.id === selectedBigTileId);
           const stepC = Math.max(1, bt?.w ?? 1), stepR = Math.max(1, bt?.h ?? 1);
+          const btW = bt?.w ?? 1, btH = bt?.h ?? 1;
           for (let r = rMin0; r + stepR - 1 <= rMax0; r += stepR) {
             for (let c = cMin0; c + stepC - 1 <= cMax0; c += stepC) {
-              placeBigTile(tilemap.id, activeId, selectedBigTileId, c, r);
+              if (Math.random() >= randomDensity) continue;
+              const jc = Math.max(0, Math.min(cols - btW, c + cellJit(randScatterX)));
+              const jr = Math.max(0, Math.min(rows - btH, r + cellJit(randScatterY)));
+              placeBigTile(tilemap.id, activeId, selectedBigTileId, jc, jr);
             }
           }
         } else if (selectedAnimatedTileId) {
@@ -1144,19 +1205,19 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             <span style={{ ...LBL, margin: 0 }}>🎲 Randomize</span>
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, cursor: "pointer", color: "var(--text-2)" }}
-            title="Give each placed BigTile a random ± pixel offset — organic scatter instead of grid-perfect placement. Applies to the plain BigTile brush AND the Randomize pool. Visual only: collision stays on the grid.">
+            title="Shift each placed BigTile by a random whole-cell offset: 1..n cells, random direction, never 0. Works with the plain BigTile brush/rect/bucket AND the Randomize pool. Collision moves with the placement.">
             <Toggle value={randScatter} onChange={setRandScatter} style={{ margin: 0 }} />
             <span>Scatter (BigTiles)</span>
             {randScatter && (
               <>
                 <span style={{ color: "var(--text-dim)" }}>±X</span>
-                <input type="number" min={0} max={4} step={0.25} value={randScatterX}
-                  onChange={(e) => setRandScatterX(Math.max(0, Math.min(4, +e.target.value || 0)))}
+                <input type="number" min={0} max={4} step={1} value={randScatterX}
+                  onChange={(e) => setRandScatterX(Math.max(0, Math.min(4, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>±Y</span>
-                <input type="number" min={0} max={4} step={0.25} value={randScatterY}
-                  onChange={(e) => setRandScatterY(Math.max(0, Math.min(4, +e.target.value || 0)))}
+                <input type="number" min={0} max={4} step={1} value={randScatterY}
+                  onChange={(e) => setRandScatterY(Math.max(0, Math.min(4, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>cells</span>
@@ -1230,20 +1291,20 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
                   </div>
                 </div>
               )}
-              {(tool === "rect" || tool === "bucket") && (
-                <label style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
-                    Density: {Math.round(randomDensity * 100)}% ({tool === "rect" ? "rect" : "bucket"} cells filled)
-                  </span>
-                  <input
-                    type="range" min={0.1} max={1} step={0.05}
-                    value={randomDensity}
-                    onChange={(e) => setRandomDensity(Number(e.target.value))}
-                    title="1.0 = every cell painted. 0.1 = ~10% of cells, sparse scatter."
-                  />
-                </label>
-              )}
             </>
+          )}
+          {(tool === "rect" || tool === "bucket") && (randomMode || selectedBigTileId) && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                Density: {Math.round(randomDensity * 100)}% ({tool === "rect" ? "rect" : "bucket"} spots filled)
+              </span>
+              <input
+                type="range" min={0.1} max={1} step={0.05}
+                value={randomDensity}
+                onChange={(e) => setRandomDensity(Number(e.target.value))}
+                title="1.0 = every spot filled. 0.1 = ~10% of spots, sparse fill."
+              />
+            </label>
           )}
         </div>
 
@@ -1837,7 +1898,7 @@ function PaintCanvas({
     visible: boolean;
     collides?: boolean;
     ySort?: boolean;
-    bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number; ox?: number; oy?: number }[];
+    bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number }[];
     animatedTilePlacements?: { id: string; animatedTileId: string; c: number; r: number }[];
   }[];
   /** Ordered tileset list (primary + extras) with firstgids + atlas URLs. */
@@ -1978,7 +2039,7 @@ function PaintCanvas({
         const bt = owner?.ts.bigTiles?.find((b) => b.id === placement.bigTileId);
         return { placement, owner, oImg, bt };
       });
-      if (L.ySort) resolvedPlacements.sort((a, b) => ((a.placement.r + (a.bt?.h ?? 1)) * tileH + (a.placement.oy ?? 0)) - ((b.placement.r + (b.bt?.h ?? 1)) * tileH + (b.placement.oy ?? 0)));
+      if (L.ySort) resolvedPlacements.sort((a, b) => (a.placement.r + (a.bt?.h ?? 1)) - (b.placement.r + (b.bt?.h ?? 1)));
       for (const { placement, owner, oImg, bt } of resolvedPlacements) {
         if (!owner || !oImg || !oImg.complete || !bt) continue;
         const ots = owner.ts;
@@ -1993,8 +2054,8 @@ function PaintCanvas({
         // tile grows DOWN/RIGHT from where you clicked (stays on-screen).
         const dw = bt.w * ots.tileW * zoom;
         const dh = bt.h * ots.tileH * zoom;
-        const dx = (placement.c * tileW + (placement.ox ?? 0)) * zoom;
-        const dy = (placement.r * tileH + (placement.oy ?? 0)) * zoom;
+        const dx = placement.c * tileW * zoom;
+        const dy = placement.r * tileH * zoom;
         ctx.drawImage(oImg, sx, sy, sw, sh, dx, dy, dw, dh);
         // Faint green outline so authors see placement boundaries.
         ctx.strokeStyle = "rgba(120,210,120,0.7)";

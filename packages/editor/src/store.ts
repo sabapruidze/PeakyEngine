@@ -313,8 +313,7 @@ interface EditorState {
   patchBigTile: (tilesetId: string, bigTileId: string, patch: Partial<BigTile>) => void;
   setBigTileTags: (tilesetId: string, bigTileId: string, tags: string[]) => void;
   /** Place a BigTile in a tilemap layer at anchor (c, r). Returns placement id. */
-  /** ox/oy = optional VISUAL pixel offsets (the Randomize brush's Scatter). */
-  placeBigTile: (tilemapId: string, layerId: string, bigTileId: string, c: number, r: number, ox?: number, oy?: number) => string;
+  placeBigTile: (tilemapId: string, layerId: string, bigTileId: string, c: number, r: number) => string;
   removeBigTilePlacement: (tilemapId: string, layerId: string, placementId: string) => void;
 
   // ---- animated tiles (live frame-cycle composites) ----
@@ -4255,7 +4254,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       },
     })),
 
-  placeBigTile: (tilemapId, layerId, bigTileId, c, r, ox, oy) => {
+  placeBigTile: (tilemapId, layerId, bigTileId, c, r) => {
     const state = get();
     const map = (state.project.tilemaps ?? []).find((m) => m.id === tilemapId);
     if (!map) return "";
@@ -4309,7 +4308,7 @@ export const useEditor = create<EditorState>((set, get) => ({
                     if (!pBt) return true;
                     return !cellsOverlap(pBt, p.c, p.r);
                   });
-              return { ...L, bigTilePlacements: [...existing, { id, bigTileId, c, r, ...(ox || oy ? { ox, oy } : {}) }] };
+              return { ...L, bigTilePlacements: [...existing, { id, bigTileId, c, r }] };
             }),
           };
         }),

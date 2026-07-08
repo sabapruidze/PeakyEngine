@@ -1646,9 +1646,8 @@ export interface TilemapLayer {
   collides: boolean;
   /** BigTile placements — instances of a tileset BigTile painted into this
    *  layer at (c, r) anchor coords. Each placement renders as ONE sprite
-   *  and Y-sorts as one unit. `ox`/`oy` are optional VISUAL pixel offsets
    *  (the Randomize brush's Scatter) — collision/mining stay cell-aligned. */
-  bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number; ox?: number; oy?: number }[];
+  bigTilePlacements?: { id: string; bigTileId: string; c: number; r: number }[];
   /** Animated tile placements — instances of a tileset AnimatedTileDef
    *  painted into this layer at (c, r). Each placement renders as one
    *  Phaser Image whose frame cycles per the def's fps + loop. */

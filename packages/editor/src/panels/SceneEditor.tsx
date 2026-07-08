@@ -246,8 +246,8 @@ export function SceneEditor() {
   const [paintBigTileId, setPaintBigTileId] = useState<string | null>(null);
   // Scatter — random ±px visual offset per placed BigTile (organic forests).
   const [paintScatter, setPaintScatter] = useState(false);
-  const [paintScatterX, setPaintScatterX] = useState(0.5);
-  const [paintScatterY, setPaintScatterY] = useState(0.5);
+  const [paintScatterX, setPaintScatterX] = useState(1);
+  const [paintScatterY, setPaintScatterY] = useState(1);
   const placeBigTile = useEditor((s) => s.placeBigTile);
   const removeBigTilePlacement = useEditor((s) => s.removeBigTilePlacement);
   const [paintRectDrag, setPaintRectDrag] = useState<PaintRectDrag | null>(null);
@@ -390,12 +390,22 @@ export function SceneEditor() {
     const py = bt.pivotY ?? 1;
     const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    const cw = paintTileset.tileW || 32, ch = paintTileset.tileH || 32;
-    const jitX = () => (paintScatter && paintScatterX > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterX * cw) : undefined);
-    const jitY = () => (paintScatter && paintScatterY > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterY * ch) : undefined);
+    // Scatter: shift the anchor by 1..n WHOLE CELLS (random direction, never
+    // 0) so placements stay on the grid and collision moves with them.
+    const cellJit = (amt: number) => {
+      if (!paintScatter || amt <= 0) return 0;
+      const a = Math.round(amt);
+      const mag = 1 + Math.floor(Math.random() * a);
+      return Math.random() < 0.5 ? -mag : mag;
+    };
+    const jitPlace = (c: number, r: number) => {
+      const jc = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, c + cellJit(paintScatterX)));
+      const jr = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, r + cellJit(paintScatterY)));
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, jc, jr);
+    };
     if (!paintBigStroke.current) {
       paintBigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR, jitX(), jitY());
+      jitPlace(anchorC, anchorR);
       return true;
     }
     const s = paintBigStroke.current;
@@ -404,7 +414,7 @@ export function SceneEditor() {
     const key = `${gc},${gr}`;
     if (!s.placed.has(key)) {
       s.placed.add(key);
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr, jitX(), jitY());
+      jitPlace(gc, gr);
     }
     return true;
   };
@@ -2590,7 +2600,7 @@ function ScenePlacedTilemap({
           const o = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === bid));
           return o?.ts.bigTiles?.find((b) => b.id === bid)?.h ?? 1;
         };
-        lPlacements.sort((a, b) => ((a.r + hOf(a.bigTileId)) * ts.tileH + ((a as { oy?: number }).oy ?? 0)) - ((b.r + hOf(b.bigTileId)) * ts.tileH + ((b as { oy?: number }).oy ?? 0)));
+        lPlacements.sort((a, b) => (a.r + hOf(a.bigTileId)) - (b.r + hOf(b.bigTileId)));
       }
       for (const placement of lPlacements) {
         const owner = gidSlots.find((s) => (s.ts.bigTiles ?? []).some((b) => b.id === placement.bigTileId));
@@ -2607,10 +2617,8 @@ function ScenePlacedTilemap({
         // Render at the OWNING tileset's true size (no squish), top-left anchored.
         const dw = bt.w * ots.tileW * scale;
         const dh = bt.h * ots.tileH * scale;
-        const px = (placement as { ox?: number }).ox ?? 0;
-        const py = (placement as { oy?: number }).oy ?? 0;
-        const dx = (placement.c * ts.tileW + px) * scale;
-        const dy = (placement.r * ts.tileH + py) * scale;
+        const dx = placement.c * ts.tileW * scale;
+        const dy = placement.r * ts.tileH * scale;
         ctx.drawImage(oImg, sx, sy, sw, sh, dx, dy, dw, dh);
       }
       // Animated-tile placements — static first-frame preview (the scene
@@ -3028,19 +3036,19 @@ function InScenePaintToolbar({
             Big tiles
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, cursor: "pointer", color: "var(--text-2)", marginBottom: 4 }}
-            title="Give each placed BigTile a random ± offset in cells — organic scatter. Visual only: collision stays on the grid.">
+            title="Shift each placed BigTile by a random whole-cell offset: 1..n cells, random direction, never 0. Collision moves with the placement.">
             <input type="checkbox" checked={scatter} onChange={(e) => setScatter(e.target.checked)} style={{ margin: 0 }} />
             <span>Scatter</span>
             {scatter && (
               <>
                 <span style={{ color: "var(--text-dim)" }}>±X</span>
-                <input type="number" min={0} max={4} step={0.25} value={scatterX}
-                  onChange={(e) => setScatterX(Math.max(0, Math.min(4, +e.target.value || 0)))}
+                <input type="number" min={0} max={4} step={1} value={scatterX}
+                  onChange={(e) => setScatterX(Math.max(0, Math.min(4, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>±Y</span>
-                <input type="number" min={0} max={4} step={0.25} value={scatterY}
-                  onChange={(e) => setScatterY(Math.max(0, Math.min(4, +e.target.value || 0)))}
+                <input type="number" min={0} max={4} step={1} value={scatterY}
+                  onChange={(e) => setScatterY(Math.max(0, Math.min(4, Math.round(+e.target.value || 0))))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>cells</span>
