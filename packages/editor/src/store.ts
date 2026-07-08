@@ -292,6 +292,9 @@ interface EditorState {
   /** Move a layer one slot up (delta -1) or down (+1) in the z stack. Slots
    *  are reassigned contiguously so z stays the on-screen order. */
   reorderTilemapLayer: (id: string, layerId: string, delta: number) => void;
+  /** Drag-drop: move a layer to `toIndex` in the ASCENDING-z order (0 =
+   *  bottom-most). z values are renumbered contiguously after the move. */
+  moveTilemapLayerTo: (id: string, layerId: string, toIndex: number) => void;
   /** Create a BigTile in a tileset from a rectangular region of cells.
    *  Returns the new bigTile id. Removes any existing bigTile that overlaps
    *  the region. */
@@ -4061,6 +4064,25 @@ export const useEditor = create<EditorState>((set, get) => ({
           // the user starts adding more layers afterward.
           const renumbered = next.map((L, i) => ({ ...L, z: i }));
           return { ...m, layers: renumbered };
+        }),
+      },
+    })),
+
+  moveTilemapLayerTo: (id, layerId, toIndex) =>
+    set((state) => ({
+      project: {
+        ...state.project,
+        tilemaps: (state.project.tilemaps ?? []).map((m) => {
+          if (m.id !== id) return m;
+          const sorted = [...m.layers].sort((a, b) => a.z - b.z);
+          const from = sorted.findIndex((L) => L.id === layerId);
+          if (from < 0) return m;
+          const target = Math.max(0, Math.min(sorted.length - 1, toIndex));
+          if (target === from) return m;
+          const next = sorted.slice();
+          const [moved] = next.splice(from, 1);
+          next.splice(target, 0, moved);
+          return { ...m, layers: next.map((L, i) => ({ ...L, z: i })) };
         }),
       },
     })),

@@ -80,6 +80,10 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   const renameTilemapLayer = useEditor((s) => s.renameTilemapLayer);
   const updateTilemapLayer = useEditor((s) => s.updateTilemapLayer);
   const reorderTilemapLayer = useEditor((s) => s.reorderTilemapLayer);
+  const moveTilemapLayerTo = useEditor((s) => s.moveTilemapLayerTo);
+  // Layer drag-drop reordering state (grip-drag a row onto another row).
+  const dragLayerId = useRef<string | null>(null);
+  const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
   // Active layer = which one the painter writes into. Persisted across the
   // session via a local ref keyed by tilemap id; defaults to the topmost layer.
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
@@ -154,6 +158,9 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
    *  first placement so drag-painting tiles composites side-by-side instead of
    *  overlap-deleting the previous stamp (placeBigTile destroys overlaps). */
   const bigStroke = useRef<{ oc: number; or: number; placed: Set<string> } | null>(null);
+  /** Randomize-brush stroke: footprints of composites placed THIS stroke —
+   *  overlapping candidates are skipped (mixed-size pools can't grid-snap). */
+  const randStrokeRects = useRef<Array<{ c: number; r: number; w: number; h: number }>>([]);
 
   // Ordered tileset list (primary + extras) with firstgids.
   const gidSlots = useMemo(() => (tilemap ? tilemapTilesets(tilemap, tilesets) : []), [tilemap, tilesets]);
@@ -308,7 +315,11 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   const entryTile = (e: PoolEntry): number | null =>
     e.kind === "cell" && tilesetCols > 0 ? activeFirstgid + e.r * tilesetCols + e.c : null;
 
-  /** Place a BigTile at (col,row), honoring its pivot like a manual placement. */
+  /** Place a BigTile at (col,row), honoring its pivot like a manual placement.
+   *  During a drag-stroke, stamps that would OVERLAP a composite already placed
+   *  this stroke are skipped (random pools mix footprint sizes, so a fixed grid
+   *  can't work here — overlap-tracking gives the same "no overlap-delete"
+   *  guarantee while letting varied sizes pack naturally). */
   const placeRandomBigTile = (id: string, col: number, row: number) => {
     const entry = allBigTiles.get(id);
     if (!entry || !activeId) return;
@@ -319,6 +330,10 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     // dropped on row 0 doesn't anchor at a negative row (off-map / invisible).
     const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
+    for (const r of randStrokeRects.current) {
+      if (anchorC < r.c + r.w && anchorC + bt.w > r.c && anchorR < r.r + r.h && anchorR + bt.h > r.r) return;
+    }
+    randStrokeRects.current.push({ c: anchorC, r: anchorR, w: bt.w, h: bt.h });
     placeBigTile(tilemap.id, activeId, id, anchorC, anchorR);
   };
 
@@ -531,6 +546,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     dragging.current = true;
     lastStamp.current = null;
     bigStroke.current = null;
+    randStrokeRects.current = [];
     if (tool === "rect") {
       setRectDrag({ c0: col, r0: row, c1: col, r1: row });
       return;
@@ -667,6 +683,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         dragging.current = false;
         lastStamp.current = null;
         bigStroke.current = null;
+        randStrokeRects.current = [];
         return;
       }
       if (activeTerrain && activeLayer) {
@@ -726,6 +743,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     dragging.current = false;
     lastStamp.current = null;
     bigStroke.current = null;
+    randStrokeRects.current = [];
   };
 
   return (
@@ -895,14 +913,40 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
                 <div
                   key={L.id}
                   onClick={() => setActiveLayerId(L.id)}
+                  onDragOver={(e) => { if (dragLayerId.current) { e.preventDefault(); setDragOverLayerId(L.id); } }}
+                  onDragLeave={() => { if (dragOverLayerId === L.id) setDragOverLayerId(null); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverLayerId(null);
+                    const from = dragLayerId.current;
+                    dragLayerId.current = null;
+                    if (!from || from === L.id) return;
+                    // Target index in ASC-z order = where the row sits bottom-up.
+                    const asc = [...tilemap.layers].sort((a, b) => a.z - b.z);
+                    const to = asc.findIndex((x) => x.id === L.id);
+                    if (to >= 0) moveTilemapLayerTo(tilemap.id, from, to);
+                  }}
                   style={{
                     display: "flex", alignItems: "center", gap: 3, padding: "3px 4px",
-                    background: isActive ? "rgba(255,210,60,0.22)" : "transparent",
+                    background: dragOverLayerId === L.id ? "rgba(90,190,255,0.18)" : isActive ? "rgba(255,210,60,0.22)" : "transparent",
                     borderLeft: isActive ? "3px solid var(--accent)" : "3px solid transparent",
-                    borderBottom: "1px solid var(--border)",
+                    borderBottom: dragOverLayerId === L.id ? "1px solid rgba(90,190,255,0.8)" : "1px solid var(--border)",
                     cursor: "pointer",
                   }}
                 >
+                  <span
+                    draggable
+                    onDragStart={(e) => {
+                      dragLayerId.current = L.id;
+                      e.dataTransfer.effectAllowed = "move";
+                      // Some browsers need data set for the drag to start.
+                      e.dataTransfer.setData("text/plain", L.id);
+                    }}
+                    onDragEnd={() => { dragLayerId.current = null; setDragOverLayerId(null); }}
+                    onClick={(e) => e.stopPropagation()}
+                    title="Drag to reorder"
+                    style={{ cursor: "grab", color: "var(--text-dim)", fontSize: 10, padding: "0 2px", userSelect: "none", flex: "0 0 auto" }}
+                  >⠿</span>
                   <Toggle
                     value={L.visible}
                     onChange={(v) => updateTilemapLayer(tilemap.id, L.id, { visible: v })}
