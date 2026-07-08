@@ -129,8 +129,9 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // places (organic forests instead of grid-perfect trees). Visual only:
   // collision/mining stay cell-aligned.
   const [randScatter, setRandScatter] = useState(false);
-  const [randScatterX, setRandScatterX] = useState(8);
-  const [randScatterY, setRandScatterY] = useState(8);
+  // Scatter amounts are in CELLS (fractions ok; converted to px at placement).
+  const [randScatterX, setRandScatterX] = useState(0.5);
+  const [randScatterY, setRandScatterY] = useState(0.5);
   // Random pool entries are EITHER a palette cell (c,r) or a BigTile (id).
   // Picking one at paint time places a random tile or a random BigTile.
   const [randomPool, setRandomPool] = useState<PoolEntry[]>([]);
@@ -328,7 +329,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
    *  this stroke are skipped (random pools mix footprint sizes, so a fixed grid
    *  can't work here — overlap-tracking gives the same "no overlap-delete"
    *  guarantee while letting varied sizes pack naturally). */
-  const placeRandomBigTile = (id: string, col: number, row: number) => {
+  const placeRandomBigTile = (id: string, col: number, row: number, fromStroke = false) => {
     const entry = allBigTiles.get(id);
     if (!entry || !activeId) return;
     const bt = entry.bt;
@@ -338,23 +339,29 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     // dropped on row 0 doesn't anchor at a negative row (off-map / invisible).
     const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    // Stroke gate. On an OVERLAP layer only the BASE ROW counts (trunk line) —
-    // canopies overlap freely while a drag still can't stack two trees on the
-    // same footing. Otherwise the full occupied footprint gates (sparse mask
-    // honored; full rect when unmasked).
+    // Gate policy:
+    //  - OVERLAP layer: only the BASE ROW counts (trunk line) — canopies overlap
+    //    freely, but neither a drag NOR a batch fill stacks trees on one footing.
+    //  - Normal layer + brush STROKE: the occupied footprint gates, so dragging
+    //    doesn't overlap-delete what it just placed.
+    //  - Normal layer + batch (rect/bucket): NO gate — the store's own overlap
+    //    dedup resolves collisions (last placed wins), the pre-gate behavior.
     const layerOverlap = tilemap.layers.find((L) => L.id === activeId)?.allowOverlap === true;
     const masked = bt.cells && bt.cells.length > 0 && bt.cells.length < bt.w * bt.h;
     const occ: string[] = [];
     if (layerOverlap) {
       const baseR = anchorR + bt.h - 1;
       for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${baseR}`);
-    } else if (masked) for (const cc of bt.cells!) occ.push(`${anchorC + cc.c},${anchorR + cc.r}`);
-    else for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${anchorR + dr}`);
+    } else if (fromStroke) {
+      if (masked) for (const cc of bt.cells!) occ.push(`${anchorC + cc.c},${anchorR + cc.r}`);
+      else for (let dr = 0; dr < bt.h; dr++) for (let dc = 0; dc < bt.w; dc++) occ.push(`${anchorC + dc},${anchorR + dr}`);
+    }
     for (const k of occ) if (randStrokeCells.current.has(k)) return;
     for (const k of occ) randStrokeCells.current.add(k);
     // Scatter: random visual px offset per placement (choosable ± amount).
+    const cw = tileset?.tileW ?? 32, ch = tileset?.tileH ?? 32;
     const jitter = randScatter && (randScatterX > 0 || randScatterY > 0)
-      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterX), oy: Math.round((Math.random() * 2 - 1) * randScatterY) }
+      ? { ox: Math.round((Math.random() * 2 - 1) * randScatterX * cw), oy: Math.round((Math.random() * 2 - 1) * randScatterY * ch) }
       : undefined;
     placeBigTile(tilemap.id, activeId, id, anchorC, anchorR, jitter?.ox, jitter?.oy);
   };
@@ -366,7 +373,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     if (col < 0 || col >= cols || row < 0 || row >= rows) return;
     const e = pickRandomEntry();
     if (!e) return;
-    if (e.kind === "bigtile") { placeRandomBigTile(e.id, col, row); return; }
+    if (e.kind === "bigtile") { placeRandomBigTile(e.id, col, row, true); return; }
     const tile = entryTile(e);
     if (tile === null) return;
     paintTiles(tilemap.id, activeId, [{ col, row, tile }], brushXf);
@@ -427,8 +434,8 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
         const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
         stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => {
-          const jx = randScatter && randScatterX > 0 ? Math.round((Math.random() * 2 - 1) * randScatterX) : undefined;
-          const jy = randScatter && randScatterY > 0 ? Math.round((Math.random() * 2 - 1) * randScatterY) : undefined;
+          const jx = randScatter && randScatterX > 0 ? Math.round((Math.random() * 2 - 1) * randScatterX * (tileset?.tileW ?? 32)) : undefined;
+          const jy = randScatter && randScatterY > 0 ? Math.round((Math.random() * 2 - 1) * randScatterY * (tileset?.tileH ?? 32)) : undefined;
           placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r, jx, jy);
         });
       }
@@ -670,6 +677,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         }
         if (edits.length > 0) paintTiles(tilemap.id, activeId, edits, brushXf);
       }
+      randStrokeCells.current = new Set();
       for (const d of bigDrops) placeRandomBigTile(d.id, d.col, d.row);
       return;
     }
@@ -738,6 +746,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
           if (tile !== null) edits.push({ col: c, row: r, tile });
         }
         if (edits.length > 0 && activeId) paintTiles(tilemap.id, activeId, edits, brushXf);
+        randStrokeCells.current = new Set();
         for (const d of bigDrops) placeRandomBigTile(d.id, d.col, d.row);
       } else {
         // Tile the brush selection across the rect — a 2×2 brush over a 6×4
@@ -1141,16 +1150,16 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             {randScatter && (
               <>
                 <span style={{ color: "var(--text-dim)" }}>±X</span>
-                <input type="number" min={0} max={128} value={randScatterX}
-                  onChange={(e) => setRandScatterX(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <input type="number" min={0} max={4} step={0.25} value={randScatterX}
+                  onChange={(e) => setRandScatterX(Math.max(0, Math.min(4, +e.target.value || 0)))}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ width: 40, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                  style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>±Y</span>
-                <input type="number" min={0} max={128} value={randScatterY}
-                  onChange={(e) => setRandScatterY(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <input type="number" min={0} max={4} step={0.25} value={randScatterY}
+                  onChange={(e) => setRandScatterY(Math.max(0, Math.min(4, +e.target.value || 0)))}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ width: 40, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
-                <span style={{ color: "var(--text-dim)" }}>px</span>
+                  style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                <span style={{ color: "var(--text-dim)" }}>cells</span>
               </>
             )}
           </label>

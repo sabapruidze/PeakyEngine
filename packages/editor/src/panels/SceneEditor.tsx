@@ -246,8 +246,8 @@ export function SceneEditor() {
   const [paintBigTileId, setPaintBigTileId] = useState<string | null>(null);
   // Scatter — random ±px visual offset per placed BigTile (organic forests).
   const [paintScatter, setPaintScatter] = useState(false);
-  const [paintScatterX, setPaintScatterX] = useState(8);
-  const [paintScatterY, setPaintScatterY] = useState(8);
+  const [paintScatterX, setPaintScatterX] = useState(0.5);
+  const [paintScatterY, setPaintScatterY] = useState(0.5);
   const placeBigTile = useEditor((s) => s.placeBigTile);
   const removeBigTilePlacement = useEditor((s) => s.removeBigTilePlacement);
   const [paintRectDrag, setPaintRectDrag] = useState<PaintRectDrag | null>(null);
@@ -390,8 +390,9 @@ export function SceneEditor() {
     const py = bt.pivotY ?? 1;
     const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-    const jitX = () => (paintScatter && paintScatterX > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterX) : undefined);
-    const jitY = () => (paintScatter && paintScatterY > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterY) : undefined);
+    const cw = paintTileset.tileW || 32, ch = paintTileset.tileH || 32;
+    const jitX = () => (paintScatter && paintScatterX > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterX * cw) : undefined);
+    const jitY = () => (paintScatter && paintScatterY > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterY * ch) : undefined);
     if (!paintBigStroke.current) {
       paintBigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
       placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR, jitX(), jitY());
@@ -3027,22 +3028,22 @@ function InScenePaintToolbar({
             Big tiles
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, cursor: "pointer", color: "var(--text-2)", marginBottom: 4 }}
-            title="Give each placed BigTile a random ± pixel offset — organic scatter. Visual only: collision stays on the grid.">
+            title="Give each placed BigTile a random ± offset in cells — organic scatter. Visual only: collision stays on the grid.">
             <input type="checkbox" checked={scatter} onChange={(e) => setScatter(e.target.checked)} style={{ margin: 0 }} />
             <span>Scatter</span>
             {scatter && (
               <>
                 <span style={{ color: "var(--text-dim)" }}>±X</span>
-                <input type="number" min={0} max={128} value={scatterX}
-                  onChange={(e) => setScatterX(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <input type="number" min={0} max={4} step={0.25} value={scatterX}
+                  onChange={(e) => setScatterX(Math.max(0, Math.min(4, +e.target.value || 0)))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
                 <span style={{ color: "var(--text-dim)" }}>±Y</span>
-                <input type="number" min={0} max={128} value={scatterY}
-                  onChange={(e) => setScatterY(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                <input type="number" min={0} max={4} step={0.25} value={scatterY}
+                  onChange={(e) => setScatterY(Math.max(0, Math.min(4, +e.target.value || 0)))}
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 38, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
-                <span style={{ color: "var(--text-dim)" }}>px</span>
+                <span style={{ color: "var(--text-dim)" }}>cells</span>
               </>
             )}
           </label>
