@@ -1176,6 +1176,7 @@ async function makeSceneBuilder(project: PeakyProject, scene: SceneData, parent:
         sprite._ySortEnabled = true;
         sprite._ySortBaseDepth = baseDepth;
         sprite._ySortPivotY = typeof bp.ySortPivotY === "number" ? bp.ySortPivotY : 1;
+        sprite._ySortFlipByDir = bp.ySortFlipByDir === true;
       }
       sprite.bpName = bp.name ?? "";
       // Body rect alpha. `hideRect` and behaviors that manage their own

@@ -371,6 +371,12 @@ export class Sprite {
   _ySortEnabled = false;
   _ySortBaseDepth = 0;
   _ySortPivotY = 1;
+  /** When true, the Y-sort pivot MIRRORS with vertical movement: moving UP uses
+   *  the configured pivot, moving DOWN uses (1 − pivot) — e.g. 0.8 up / 0.2
+   *  down. Direction latches while idle (no flicker when stopping). */
+  _ySortFlipByDir = false;
+  private _ySortDirDown = false;
+  private _ySortPrevY = Number.NaN;
 
   /**
    * Route a Phaser GameObject to the right camera based on whether
@@ -986,7 +992,18 @@ export class Sprite {
       // origin) is the fallback when the BP renders as a bare rectangle.
       const topY = ext ? ext.topY : go.y - (go.displayHeight ?? go.height ?? 0) / 2;
       const h = ext ? ext.height : ((go.displayHeight ?? go.height ?? 0) as number);
-      const newDepth = this._ySortBaseDepth + topY + h * this._ySortPivotY;
+      // Direction-mirrored pivot: track vertical movement by position delta
+      // (works for physics AND direct movement); latch the last direction while
+      // idle so stopping doesn't flicker the depth.
+      let pivot = this._ySortPivotY;
+      if (this._ySortFlipByDir) {
+        const dy = Number.isNaN(this._ySortPrevY) ? 0 : go.y - this._ySortPrevY;
+        this._ySortPrevY = go.y;
+        if (dy > 0.05) this._ySortDirDown = true;
+        else if (dy < -0.05) this._ySortDirDown = false;
+        if (this._ySortDirDown) pivot = 1 - pivot;
+      }
+      const newDepth = this._ySortBaseDepth + topY + h * pivot;
       this.gameObject.setDepth(newDepth);
       // Also push the depth onto any SpriteRenderer / Text overlay NOW so the
       // visual catches up THIS frame. Without this, syncOverlay only runs once

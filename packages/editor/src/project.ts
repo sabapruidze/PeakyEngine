@@ -309,6 +309,13 @@ export interface BlueprintDef {
    */
   ySortPivotY?: number;
   /**
+   * When true, the Y-sort pivot MIRRORS with vertical movement direction:
+   * moving UP uses `ySortPivotY` as configured, moving DOWN uses (1 − pivot)
+   * — e.g. 0.8 up / 0.2 down. The direction latches while idle. For characters
+   * whose depth reference shifts between their up- and down-facing sprites.
+   */
+  ySortFlipByDir?: boolean;
+  /**
    * When true, instances of this BP IGNORE a Y-sort layer's per-tick depth
    * recompute — they keep a fixed depth (layer base + per-instance z) instead
    * of interleaving by world Y. For decals / FX (blood splats, shadows) that

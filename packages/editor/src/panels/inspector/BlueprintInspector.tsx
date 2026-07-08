@@ -172,6 +172,10 @@ export function BlueprintIdentitySection({ bp }: { bp: BlueprintDef }) {
           onChange={(e) => update(bp.id, { ySortPivotY: Math.max(0, Math.min(1, Number(e.target.value) || 0)) })}
         />
       </div>
+      <div className="field" title="Mirror the Y-sort pivot with vertical movement: moving UP uses the pivot as set (e.g. 0.8), moving DOWN uses 1 − pivot (0.2). Direction latches while standing still. For characters whose depth reference shifts between up- and down-facing sprites.">
+        <label>Pivot ↕ Mirror</label>
+        <Toggle value={!!bp.ySortFlipByDir} onChange={(v) => update(bp.id, { ySortFlipByDir: v || undefined })} />
+      </div>
       <div className="field" title="When on, this BP ignores the layer's Y-sort — it keeps a fixed depth instead of interleaving by Y. For decals / FX like blood splats that shouldn't flicker in front of and behind characters. Use the instance Z-order to place it above (high Z) or below (negative Z) the Y-sorted sprites.">
         <label>Exclude Y-sort</label>
         <Toggle value={!!bp.ySortExclude} onChange={(v) => update(bp.id, { ySortExclude: v || undefined })} />
