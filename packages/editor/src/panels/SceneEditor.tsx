@@ -244,6 +244,9 @@ export function SceneEditor() {
   const [paintActiveTilesetId, setPaintActiveTilesetId] = useState<string | null>(null);
   const [paintTerrainId, setPaintTerrainId] = useState<string | null>(null);
   const [paintBigTileId, setPaintBigTileId] = useState<string | null>(null);
+  // Scatter — random ±px visual offset per placed BigTile (organic forests).
+  const [paintScatter, setPaintScatter] = useState(false);
+  const [paintScatterPx, setPaintScatterPx] = useState(8);
   const placeBigTile = useEditor((s) => s.placeBigTile);
   const removeBigTilePlacement = useEditor((s) => s.removeBigTilePlacement);
   const [paintRectDrag, setPaintRectDrag] = useState<PaintRectDrag | null>(null);
@@ -386,9 +389,10 @@ export function SceneEditor() {
     const py = bt.pivotY ?? 1;
     const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
     const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
+    const jit = () => (paintScatter && paintScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * paintScatterPx) : undefined);
     if (!paintBigStroke.current) {
       paintBigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR);
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR, jit(), jit());
       return true;
     }
     const s = paintBigStroke.current;
@@ -397,7 +401,7 @@ export function SceneEditor() {
     const key = `${gc},${gr}`;
     if (!s.placed.has(key)) {
       s.placed.add(key);
-      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr);
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr, jit(), jit());
     }
     return true;
   };
@@ -2344,6 +2348,10 @@ export function SceneEditor() {
           setTool={setPaintTool}
           xf={paintXf}
           setXf={setPaintXf}
+          scatter={paintScatter}
+          setScatter={setPaintScatter}
+          scatterPx={paintScatterPx}
+          setScatterPx={setPaintScatterPx}
           selection={paintSel}
           setSelection={setPaintSel}
           activeLayerId={paintActiveLayerId}
@@ -2877,7 +2885,8 @@ function ScenePlacedTilemap({
  *  reset-zoom toggles in the top-right. */
 function InScenePaintToolbar({
   vpBox, map, tileset, tilesetOptions, activeTilesetId, setActiveTilesetId,
-  tool, setTool, xf, setXf, selection, setSelection, activeLayerId, setActiveLayerId,
+  tool, setTool, xf, setXf, scatter, setScatter, scatterPx, setScatterPx,
+  selection, setSelection, activeLayerId, setActiveLayerId,
   terrainId, setTerrainId, bigTileId, setBigTileId, onClose,
 }: {
   vpBox: { left: number; top: number; right: number };
@@ -2890,6 +2899,10 @@ function InScenePaintToolbar({
   setTool: (t: PaintTool) => void;
   xf: number;
   setXf: (updater: (v: number) => number) => void;
+  scatter: boolean;
+  setScatter: (v: boolean) => void;
+  scatterPx: number;
+  setScatterPx: (v: number) => void;
   selection: PaintRectDrag;
   setSelection: (s: PaintRectDrag) => void;
   activeLayerId: string;
@@ -3007,6 +3020,21 @@ function InScenePaintToolbar({
           <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--text-dim)", marginBottom: 3 }}>
             Big tiles
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, cursor: "pointer", color: "var(--text-2)", marginBottom: 4 }}
+            title="Give each placed BigTile a random ± pixel offset — organic scatter. Visual only: collision stays on the grid.">
+            <input type="checkbox" checked={scatter} onChange={(e) => setScatter(e.target.checked)} style={{ margin: 0 }} />
+            <span>Scatter</span>
+            {scatter && (
+              <>
+                <span style={{ color: "var(--text-dim)" }}>±</span>
+                <input type="number" min={0} max={128} value={scatterPx}
+                  onChange={(e) => setScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ width: 42, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)" }} />
+                <span style={{ color: "var(--text-dim)" }}>px</span>
+              </>
+            )}
+          </label>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
             <button
               onClick={() => setBigTileId(null)}

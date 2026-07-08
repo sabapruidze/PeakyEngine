@@ -425,7 +425,11 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         const py = bt.pivotY ?? 1;
         const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
         const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-        stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r));
+        stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => {
+          const jx = randScatter && randScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * randScatterPx) : undefined;
+          const jy = randScatter && randScatterPx > 0 ? Math.round((Math.random() * 2 - 1) * randScatterPx) : undefined;
+          placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r, jx, jy);
+        });
       }
       return true;
     }
@@ -1129,23 +1133,23 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
             />
             <span style={{ ...LBL, margin: 0 }}>🎲 Randomize</span>
           </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, cursor: "pointer", color: "var(--text-2)" }}
+            title="Give each placed BigTile a random ± pixel offset — organic scatter instead of grid-perfect placement. Applies to the plain BigTile brush AND the Randomize pool. Visual only: collision stays on the grid.">
+            <Toggle value={randScatter} onChange={setRandScatter} style={{ margin: 0 }} />
+            <span>Scatter (BigTiles)</span>
+            {randScatter && (
+              <>
+                <span style={{ color: "var(--text-dim)" }}>±</span>
+                <input type="number" min={0} max={128} value={randScatterPx}
+                  onChange={(e) => setRandScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
+                <span style={{ color: "var(--text-dim)" }}>px</span>
+              </>
+            )}
+          </label>
           {randomMode && (
             <>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, cursor: "pointer", color: "var(--text-2)" }}
-                title="Give each placed BigTile a random ± pixel offset — organic scatter instead of grid-perfect trees. Visual only: collision stays on the grid.">
-                <Toggle value={randScatter} onChange={setRandScatter} style={{ margin: 0 }} />
-                <span>Scatter (BigTiles)</span>
-                {randScatter && (
-                  <>
-                    <span style={{ color: "var(--text-dim)" }}>±</span>
-                    <input type="number" min={0} max={128} value={randScatterPx}
-                      onChange={(e) => setRandScatterPx(Math.max(0, Math.min(128, Math.round(+e.target.value || 0))))}
-                      onClick={(e) => e.stopPropagation()}
-                      style={{ width: 44, fontSize: 10, padding: "1px 4px", background: "var(--inner)", border: "1px solid var(--border)", borderRadius: 2, color: "var(--text)" }} />
-                    <span style={{ color: "var(--text-dim)" }}>px</span>
-                  </>
-                )}
-              </label>
               <div style={{ fontSize: 10, color: "var(--text-dim)" }}>
                 Click tiles in the palette to add/remove, or add BigTiles below. Weights are relative.
               </div>
