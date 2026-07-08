@@ -150,6 +150,10 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   // every mousemove event (a 4×4 brush would otherwise touch 16 cells per
   // fired event, even when the cursor stays in the same cell).
   const lastStamp = useRef<{ col: number; row: number } | null>(null);
+  /** BigTile/Animated stroke state — anchors the FOOTPRINT GRID at the stroke's
+   *  first placement so drag-painting tiles composites side-by-side instead of
+   *  overlap-deleting the previous stamp (placeBigTile destroys overlaps). */
+  const bigStroke = useRef<{ oc: number; or: number; placed: Set<string> } | null>(null);
 
   // Ordered tileset list (primary + extras) with firstgids.
   const gidSlots = useMemo(() => (tilemap ? tilemapTilesets(tilemap, tilesets) : []), [tilemap, tilesets]);
@@ -355,10 +359,29 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
   };
 
   /** Place the selected BigTile (pivot-anchored) or Animated tile at one cell.
-   *  Returns true if a composite was placed (so callers can skip tile paint). */
+   *  Returns true if a composite was placed (so callers can skip tile paint).
+   *
+   *  Drag-painting: stamps snap to a FOOTPRINT GRID anchored at the stroke's
+   *  first placement (bigStroke ref), so moving the mouse tiles composites
+   *  side-by-side — without this, every stamp overlapped the previous one and
+   *  placeBigTile's overlap rule deleted it (only the last stamp survived). */
   const placeBigOrAnimatedAt = (col: number, row: number): boolean => {
     if (!activeLayer) return false;
     if (col < 0 || col >= cols || row < 0 || row >= rows) return false;
+    const stampSnapped = (anchorC: number, anchorR: number, w: number, h: number, place: (c: number, r: number) => void) => {
+      if (!bigStroke.current) {
+        bigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
+        place(anchorC, anchorR);
+        return;
+      }
+      const s = bigStroke.current;
+      const gc = Math.max(0, Math.min(cols - w, s.oc + Math.round((anchorC - s.oc) / w) * w));
+      const gr = Math.max(0, Math.min(rows - h, s.or + Math.round((anchorR - s.or) / h) * h));
+      const key = `${gc},${gr}`;
+      if (s.placed.has(key)) return;
+      s.placed.add(key);
+      place(gc, gr);
+    };
     if (selectedBigTileId) {
       const bt = (tileset?.bigTiles ?? []).find((b) => b.id === selectedBigTileId);
       if (bt) {
@@ -366,12 +389,14 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         const py = bt.pivotY ?? 1;
         const anchorC = Math.max(0, Math.min(cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
         const anchorR = Math.max(0, Math.min(rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-        placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, anchorC, anchorR);
+        stampSnapped(anchorC, anchorR, bt.w, bt.h, (c, r) => placeBigTile(tilemap.id, activeLayer.id, selectedBigTileId, c, r));
       }
       return true;
     }
     if (selectedAnimatedTileId) {
-      placeAnimatedTile(tilemap.id, activeLayer.id, selectedAnimatedTileId, col, row);
+      const at = (tileset?.animatedTiles ?? []).find((a) => a.id === selectedAnimatedTileId);
+      const reg = at && at.frames.length > 0 ? animFrameRegion(at.frames[0], tileset?.cols ?? 1) : { w: 1, h: 1 };
+      stampSnapped(col, row, Math.max(1, reg.w), Math.max(1, reg.h), (c, r) => placeAnimatedTile(tilemap.id, activeLayer.id, selectedAnimatedTileId, c, r));
       return true;
     }
     return false;
@@ -505,6 +530,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     }
     dragging.current = true;
     lastStamp.current = null;
+    bigStroke.current = null;
     if (tool === "rect") {
       setRectDrag({ c0: col, r0: row, c1: col, r1: row });
       return;
@@ -640,6 +666,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
         setRectDrag(null);
         dragging.current = false;
         lastStamp.current = null;
+        bigStroke.current = null;
         return;
       }
       if (activeTerrain && activeLayer) {
@@ -698,6 +725,7 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
     }
     dragging.current = false;
     lastStamp.current = null;
+    bigStroke.current = null;
   };
 
   return (

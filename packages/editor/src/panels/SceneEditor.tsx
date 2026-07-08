@@ -371,17 +371,43 @@ export function SceneEditor() {
     }
   };
 
+  /** BigTile drag-stroke state — footprint grid anchored at the stroke's first
+   *  stamp, so drag-painting tiles composites side-by-side instead of overlap-
+   *  deleting the previous one (mirrors TilemapTab's bigStroke). */
+  const paintBigStroke = useRef<{ oc: number; or: number; placed: Set<string> } | null>(null);
+
+  /** Place the selected BigTile at (col,row), footprint-grid-snapped within the
+   *  active stroke. Returns true when a BigTile brush is active. */
+  const placeBigAtScene = (col: number, row: number): boolean => {
+    if (!paintBigTileId || !selectedTilemapMap || !paintTileset || !paintActiveLayerId) return false;
+    const bt = (paintTileset.bigTiles ?? []).find((b) => b.id === paintBigTileId);
+    if (!bt) return true;
+    const px = bt.pivotX ?? 0.5;
+    const py = bt.pivotY ?? 1;
+    const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
+    const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
+    if (!paintBigStroke.current) {
+      paintBigStroke.current = { oc: anchorC, or: anchorR, placed: new Set([`${anchorC},${anchorR}`]) };
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR);
+      return true;
+    }
+    const s = paintBigStroke.current;
+    const gc = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, s.oc + Math.round((anchorC - s.oc) / bt.w) * bt.w));
+    const gr = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, s.or + Math.round((anchorR - s.or) / bt.h) * bt.h));
+    const key = `${gc},${gr}`;
+    if (!s.placed.has(key)) {
+      s.placed.add(key);
+      placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, gc, gr);
+    }
+    return true;
+  };
+
   const onScenePaintDown = (col: number, row: number, e: MouseEvent) => {
-    // BigTile placement — single click places ONE composite. Click cell becomes
-    // the pivot (so trees with pivotY=1 land their trunk-base on the click).
+    // BigTile placement — click places one; HOLD + DRAG tiles more side-by-side
+    // (footprint-snapped). Click cell is the pivot (trees land trunk-base).
     if (paintBigTileId && selectedTilemapMap && paintTileset && paintActiveLayerId) {
-      const bt = (paintTileset.bigTiles ?? []).find((b) => b.id === paintBigTileId);
-      if (bt) {
-        const px = bt.pivotX ?? 0.5;
-        const py = bt.pivotY ?? 1;
-        const anchorC = Math.max(0, Math.min(selectedTilemapMap.cols - bt.w, col - Math.min(bt.w - 1, Math.floor(px * bt.w))));
-        const anchorR = Math.max(0, Math.min(selectedTilemapMap.rows - bt.h, row - Math.min(bt.h - 1, Math.floor(py * bt.h))));
-        placeBigTile(selectedTilemapMap.id, paintActiveLayerId, paintBigTileId, anchorC, anchorR);
+      paintBigStroke.current = null;
+      if (placeBigAtScene(col, row)) {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -479,6 +505,8 @@ export function SceneEditor() {
   };
 
   const onScenePaintMove = (col: number, row: number) => {
+    // BigTile brush — drag tiles composites side-by-side (footprint-snapped).
+    if (paintBigTileId) { placeBigAtScene(col, row); return; }
     if (paintTool === "rect") {
       setPaintRectDrag((d) => (d ? { ...d, c1: col, r1: row } : d));
       return;
@@ -487,6 +515,7 @@ export function SceneEditor() {
   };
 
   const onScenePaintUp = () => {
+    paintBigStroke.current = null;
     if (paintTool === "rect" && paintRectDrag && selectedTilemapMap && paintTileset && paintActiveLayerId) {
       const terrains = paintTileset.terrains ?? [];
       const rawTerrain = paintTerrainId ? terrains.find((t) => t.id === paintTerrainId) ?? null : null;
