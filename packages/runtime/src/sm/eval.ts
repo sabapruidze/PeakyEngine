@@ -6171,7 +6171,7 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           const nextHP = tm.damageAnimatedTile(sprite, layerId, cell.c, cell.r, damage, seg, box);
           return;
         }
-        const bigPlacement = tm.findBigTilePlacementAt(layerId, cell.c, cell.r);
+        const bigPlacement = tm.findMinableBigTilePlacementAt(layerId, cell.c, cell.r, seg, box);
         if (bigPlacement) {
           if (minedPlacements.has(bigPlacement.id)) return; // already hit this placement this swing
           minedPlacements.add(bigPlacement.id);
@@ -6182,12 +6182,12 @@ function runActionOnSprite(sprite: Sprite, a: StateAction, sourceLabel?: string)
           }
           const prevHP = tm.getBigTileHP(bigPlacement.id);
           const nextHP = tm.damageBigTile(sprite, layerId, cell.c, cell.r, damage, seg, box);
-          // < 0 = the hit landed outside the BigTile's damage area (e.g. a
-          // trunk-only tree's canopy) — a silent no-op so the multi-cell loop
-          // keeps going.
           if (nextHP < 0) return;
           return;
         }
+        // Inside a BigTile bbox but outside EVERY damage area (canopy over
+        // this cell) — silent no-op; don't mine the plain tile underneath.
+        if (tm.findBigTilePlacementAt(layerId, cell.c, cell.r)) return;
         const idx = tm.getTileAt(layerId, cell.c, cell.r);
         if (idx < 0) {
           if (!quiet) Logger.log({ level: "warn", source: src, message: `cell (${cell.c}, ${cell.r}) on "${tmName}/${layerName}" is EMPTY — nothing to mine.` });

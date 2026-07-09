@@ -592,14 +592,30 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
       const bt = (tileset?.bigTiles ?? []).find((b) => b.id === selectedBigTileId);
       if (!bt) return;
       const stepC = Math.max(1, bt.w), stepR = Math.max(1, bt.h);
+      // Scattered anchors can collide, and on an Allow Overlap layer the
+      // store won't dedup — skip exact duplicates so a fill can't stack two
+      // identical placements on one spot.
+      const placedAnchors = new Set<string>();
+      let spots = 0;
       for (let r = rMin; r + stepR - 1 <= rMax; r += stepR) {
         for (let c = cMin; c + stepC - 1 <= cMax; c += stepC) {
           if (!region.has(r * cols + c)) continue;
+          spots++;
           if (Math.random() >= randomDensity) continue;
           const jc = Math.max(0, Math.min(cols - bt.w, c + cellJit(randScatterX)));
           const jr = Math.max(0, Math.min(rows - bt.h, r + cellJit(randScatterY)));
+          const key = jc + "," + jr;
+          if (placedAnchors.has(key)) continue;
+          placedAnchors.add(key);
           placeBigTile(tilemap.id, activeId, selectedBigTileId, jc, jr);
         }
+      }
+      // Region smaller than the footprint -> the stepped loop never ran;
+      // place one at the clicked cell instead of silently doing nothing.
+      if (spots === 0) {
+        const ac = Math.max(0, Math.min(cols - bt.w, col));
+        const ar = Math.max(0, Math.min(rows - bt.h, row));
+        placeBigTile(tilemap.id, activeId, selectedBigTileId, ac, ar);
       }
     } else if (selectedAnimatedTileId) {
       for (const i of region) {
@@ -759,11 +775,15 @@ export function TilemapTab({ tilemapId }: { tilemapId: string }) {
           const bt = (tileset?.bigTiles ?? []).find((b) => b.id === selectedBigTileId);
           const stepC = Math.max(1, bt?.w ?? 1), stepR = Math.max(1, bt?.h ?? 1);
           const btW = bt?.w ?? 1, btH = bt?.h ?? 1;
+          const placedAnchors = new Set<string>();
           for (let r = rMin0; r + stepR - 1 <= rMax0; r += stepR) {
             for (let c = cMin0; c + stepC - 1 <= cMax0; c += stepC) {
               if (Math.random() >= randomDensity) continue;
               const jc = Math.max(0, Math.min(cols - btW, c + cellJit(randScatterX)));
               const jr = Math.max(0, Math.min(rows - btH, r + cellJit(randScatterY)));
+              const key = jc + "," + jr;
+              if (placedAnchors.has(key)) continue;
+              placedAnchors.add(key);
               placeBigTile(tilemap.id, activeId, selectedBigTileId, jc, jr);
             }
           }

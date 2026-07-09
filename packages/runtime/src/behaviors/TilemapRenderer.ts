@@ -1809,33 +1809,37 @@ export class TilemapRenderer extends Behavior {
       // BigTile (or any cell in the bbox if no mask is set). A tree with a
       // 2x2 trunk mask and 4x6 bbox should only fall when ground is mined
       // below the trunk, not below the canopy.
-      const bigP = this.findBigTilePlacementAt(layerId, c, aboveR);
-      if (bigP) {
+      // Overlapping placements are legal (Allow Overlap layers), so scan past
+      // bbox hits whose mask doesn't cover the cell and cascade EVERY
+      // placement footed here — a first-bbox match would dead-end on a canopy.
+      const bigL = this.findLayer(layerId);
+      for (const bigP of [...(bigL?.bigTilePlacements ?? [])]) {
         const bt = this.bigTiles[bigP.bigTileId];
-        if (bt && this._bigTileCovers(bt, bigP, c, aboveR)) {
-          const action = bt.onBelowRemoved;
-          if (action === "destroy") {
-            const topR = bigP.r;
-            const leftC = bigP.c;
-            const wCells = bt.w;
-            this.removeBigTileAt(layerId, bigP.c, bigP.r);
-            actor.scene.data.set("peaky.lastDestroyedTile", {
-              tilemap: this.name,
-              layer: layerId,
-              c: leftC,
-              r: topR,
-              idx: -1,
-              bigTileId: bigP.bigTileId,
-              x: 0, y: 0,
-            });
-            this._emitTileEvent(actor, "_tileDestroyed");
-            // Recurse upward from every column the composite spanned.
-            for (let dx = 0; dx < wCells; dx++) {
-              this._cascadeAbove(actor, layerId, leftC + dx, topR);
-            }
-          } else if (action === "drop") {
-            this._tweenBigTileDrop(actor, layerId, bigP.c, bigP.r, bigP.bigTileId);
+        if (!bt) continue;
+        if (c < bigP.c || c >= bigP.c + bt.w || aboveR < bigP.r || aboveR >= bigP.r + bt.h) continue;
+        if (!this._bigTileCovers(bt, bigP, c, aboveR)) continue;
+        const action = bt.onBelowRemoved;
+        if (action === "destroy") {
+          const topR = bigP.r;
+          const leftC = bigP.c;
+          const wCells = bt.w;
+          this._destroyBigTilePlacement(bigL!, bigP.id);
+          actor.scene.data.set("peaky.lastDestroyedTile", {
+            tilemap: this.name,
+            layer: layerId,
+            c: leftC,
+            r: topR,
+            idx: -1,
+            bigTileId: bigP.bigTileId,
+            x: 0, y: 0,
+          });
+          this._emitTileEvent(actor, "_tileDestroyed");
+          // Recurse upward from every column the composite spanned.
+          for (let dx = 0; dx < wCells; dx++) {
+            this._cascadeAbove(actor, layerId, leftC + dx, topR);
           }
+        } else if (action === "drop") {
+          this._tweenBigTileDrop(actor, layerId, bigP.c, bigP.r, bigP.bigTileId);
         }
       }
     }
@@ -2204,6 +2208,40 @@ export class TilemapRenderer extends Behavior {
       const bt = this.bigTiles[p.bigTileId];
       if (!bt) continue;
       if (c >= p.c && c < p.c + bt.w && r >= p.r && r < p.r + bt.h) return p;
+    }
+    return null;
+  }
+
+  /** Like findBigTilePlacementAt, but skips placements whose DAMAGE AREA
+   *  rejects the hit (collidePoly tested with the seg/box when given, else
+   *  cell-overlap; damageRect as the coarse fallback). Overlapping placements
+   *  are legal (Allow Overlap layers; canopy bboxes over masked trunks), so
+   *  the first bbox hit may reject while a later placement accepts — mining
+   *  must land on the ACCEPTING one, not dead-end on the first. */
+  findMinableBigTilePlacementAt(layerId: string, c: number, r: number, seg?: MineSeg, box?: MineBox): { id: string; bigTileId: string; c: number; r: number } | null {
+    const L = this.findLayer(layerId);
+    if (!L) return null;
+    for (const p of (L.bigTilePlacements ?? [])) {
+      const bt = this.bigTiles[p.bigTileId];
+      if (!bt) continue;
+      if (c < p.c || c >= p.c + bt.w || r < p.r || r >= p.r + bt.h) continue;
+      if (bt.collidePoly && bt.collidePoly.points.length >= 3) {
+        const srcTW = bt._src?.tileW ?? this.tileW;
+        const srcTH = bt._src?.tileH ?? this.tileH;
+        const left = this._layerLeft + p.c * this.tileW, top = this._layerTop + p.r * this.tileH;
+        const hit = seg
+          ? this._segmentInDamagePoly(bt.collidePoly.points, left, top, seg)
+          : box
+          ? this._boxInDamagePoly(bt.collidePoly.points, bt.w * srcTW, bt.h * srcTH, left, top, box)
+          : this._cellInDamagePoly(bt.collidePoly.points, bt.w * srcTW, bt.h * srcTH, srcTW, srcTH, c - p.c, r - p.r);
+        if (!hit) continue;
+      } else if (bt.damageRect) {
+        const dc = c - p.c, dr = r - p.r;
+        const inside = dc >= bt.damageRect.cx && dc < bt.damageRect.cx + bt.damageRect.cw
+                    && dr >= bt.damageRect.cy && dr < bt.damageRect.cy + bt.damageRect.ch;
+        if (!inside) continue;
+      }
+      return p;
     }
     return null;
   }
@@ -2776,30 +2814,12 @@ export class TilemapRenderer extends Behavior {
    *  Returns the new HP, 0 on destroy, or -1 when nothing minable here
    *  (no placement, outside the damage area, or unbreakable). */
   damageBigTile(actor: Sprite, layerId: string, c: number, r: number, amount: number, seg?: MineSeg, box?: MineBox): number {
-    const p = this.findBigTilePlacementAt(layerId, c, r);
+    const L = this.findLayer(layerId);
+    if (!L) return -1;
+    const p = this.findMinableBigTilePlacementAt(layerId, c, r, seg, box);
     if (!p) return -1;
     const bt = this.bigTiles[p.bigTileId];
     if (!bt) return -1;
-    // Damage area gate — the painted `collidePoly` IS the damage area. With a
-    // tracer LINE (`seg`) a hit only counts when the line actually crosses the
-    // silhouette (sub-cell); without one (box/direct) fall back to cell-overlap.
-    // Supersedes the coarse cell `damageRect` when present.
-    if (bt.collidePoly && bt.collidePoly.points.length >= 3) {
-      const srcTW = bt._src?.tileW ?? this.tileW;
-      const srcTH = bt._src?.tileH ?? this.tileH;
-      const left = this._layerLeft + p.c * this.tileW, top = this._layerTop + p.r * this.tileH;
-      const hit = seg
-        ? this._segmentInDamagePoly(bt.collidePoly.points, left, top, seg)
-        : box
-        ? this._boxInDamagePoly(bt.collidePoly.points, bt.w * srcTW, bt.h * srcTH, left, top, box)
-        : this._cellInDamagePoly(bt.collidePoly.points, bt.w * srcTW, bt.h * srcTH, srcTW, srcTH, c - p.c, r - p.r);
-      if (!hit) return -1;
-    } else if (bt.damageRect) {
-      const dc = c - p.c, dr = r - p.r;
-      const inside = dc >= bt.damageRect.cx && dc < bt.damageRect.cx + bt.damageRect.cw
-                  && dr >= bt.damageRect.cy && dr < bt.damageRect.cy + bt.damageRect.ch;
-      if (!inside) return -1;
-    }
     if (this._bigTileDepleted.has(p.id)) return 0;
     const maxMap = this._ensureTileMaxHPMap();
     const maxKey = `${this.tilemapId}#big#${p.id}`;
@@ -2838,7 +2858,7 @@ export class TilemapRenderer extends Behavior {
     if (bt.signalOnMine) this._emitTileEvent(actor, bt.signalOnMine);
     if (bt.destroyOnDepleted !== false) {
       this._scheduleRegrow((bt as { growBack?: number | string }).growBack, (bt as { growBackPop?: boolean }).growBackPop !== false, { layerId, c: p.c, r: p.r, bigTileId: p.bigTileId });
-      this.removeBigTileAt(layerId, p.c, p.r);
+      this._destroyBigTilePlacement(L, p.id);
     } else {
       // Keep the visual; strip the collider so it no longer blocks movement.
       this._bigTileDepleted.add(p.id);
