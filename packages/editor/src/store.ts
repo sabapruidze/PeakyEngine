@@ -346,6 +346,8 @@ interface EditorState {
   paintNavWalkable: (sceneId: string, cells: { c: number; r: number; walkable: number }[]) => void;
   /** Paint the SHELTER mask (weather-blocked cells). on: 1 = shelter, 0 = clear. */
   paintNavShelter: (sceneId: string, cells: { c: number; r: number; on: number }[]) => void;
+  /** Wipe the whole painted grid — walkable paint or the shelter mask. */
+  clearNavPaint: (sceneId: string, kind: "walkable" | "shelter") => void;
   /** Change grid resolution; resamples the painted walkable mask so paint survives. */
   setNavCellSize: (sceneId: string, cellSize: number) => void;
   /** Resize the nav AREA in world px (for unbounded maps bigger than the layout).
@@ -4571,6 +4573,20 @@ export const useEditor = create<EditorState>((set, get) => ({
             shelter[r * nm.cols + c] = on;
           }
           return { ...sc, navMesh: { ...nm, shelter } };
+        }),
+      },
+    })),
+
+  clearNavPaint: (sceneId, kind) =>
+    set((state) => ({
+      project: {
+        ...state.project,
+        scenes: state.project.scenes.map((sc) => {
+          if (sc.id !== sceneId || !sc.navMesh) return sc;
+          const nm = sc.navMesh;
+          return kind === "walkable"
+            ? { ...sc, navMesh: { ...nm, walkable: new Array(nm.cols * nm.rows).fill(0) } }
+            : { ...sc, navMesh: { ...nm, shelter: undefined } };
         }),
       },
     })),

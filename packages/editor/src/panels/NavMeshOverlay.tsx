@@ -81,6 +81,7 @@ export function NavMeshView({ scene }: { scene: SceneData }) {
 export function NavMeshOverlay({ scene }: { scene: SceneData }) {
   const paintNavWalkable = useEditor((s) => s.paintNavWalkable);
   const paintNavShelter = useEditor((s) => s.paintNavShelter);
+  const clearNavPaint = useEditor((s) => s.clearNavPaint);
   const setNavCellSize = useEditor((s) => s.setNavCellSize);
   const setNavSize = useEditor((s) => s.setNavSize);
   const setNavDebug = useEditor((s) => s.setNavDebug);
@@ -356,6 +357,9 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
       {(["select", "brush", "erase", "obstacle", "waypoint"] as NavTool[]).map((t) => (
         <button key={t} onClick={() => { setTool(t); setPolyPts([]); }} style={BTN(tool === t)}>{t}</button>
       ))}
+      <button onClick={() => { if (window.confirm("Clear ALL painted nav cells on this scene? Obstacles and waypoints stay.")) clearNavPaint(scene.id, "walkable"); }}
+        title="Wipe every painted walkable cell (obstacles and waypoints stay)"
+        style={{ ...BTN(false), color: "#e87" }}>clear</button>
       <span style={{ display: "flex", alignItems: "center", gap: 3, paddingLeft: 6, marginLeft: 2, borderLeft: "1px solid rgba(255,255,255,0.15)" }}
         title="Paint static ENVIRONMENT cover — weather is blocked over these cells. BLUE = fully dry (removes both drops AND splashes). RED = keeps the rain falling but removes its splashes. For moving objects (NPCs, umbrellas) use Weather's Shelter Tags instead.">
         <span style={{ color: "#7fd0ff", fontSize: 11 }}>☂</span>
@@ -365,6 +369,9 @@ export function NavMeshOverlay({ scene }: { scene: SceneData }) {
           style={{ ...BTN(tool === "shelterDrizzle"), background: tool === "shelterDrizzle" ? "rgba(255,90,90,0.55)" : "rgba(255,90,90,0.14)", color: "#ffd6d6" }}>● no splash</button>
         <button onClick={() => { setTool("shelterErase"); setPolyPts([]); }}
           style={{ ...BTN(tool === "shelterErase"), background: tool === "shelterErase" ? "rgba(200,200,200,0.4)" : "rgba(255,255,255,0.06)" }}>erase</button>
+        <button onClick={() => { if (window.confirm("Clear the ENTIRE shelter mask on this scene?")) clearNavPaint(scene.id, "shelter"); }}
+          title="Wipe the whole shelter mask (blue + red)"
+          style={{ ...BTN(false), color: "#e87" }}>clear</button>
       </span>
       {(tool === "brush" || tool === "erase" || tool === "shelter" || tool === "shelterDrizzle" || tool === "shelterErase") && (
         <span style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 4 }}>
