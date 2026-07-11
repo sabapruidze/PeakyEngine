@@ -163,24 +163,30 @@ export class TiledBackground extends Behavior {
       texW = src.width || 256;
       texH = src.height || 256;
     } catch { /* texture race — defaults are fine */ }
-    // VAST: large enough that any reasonable game world can't reach its
-    // edge, small enough that Phaser doesn't choke (10M+ silently fails
-    // and produces a blank render — 65536 is comfortable and covers any
-    // realistic 2D level).
-    const VAST = 65536;
+    // Auto axes are sized to the CAMERA VIEWPORT (padded ×2, capped) — NOT
+    // a "vast" constant. Phaser's TileSprite allocates an internal canvas at
+    // the FULL requested size in its constructor (even in WebGL mode), so a
+    // 65536×65536 request is a multi-GB allocation past Chrome's 65535 max
+    // canvas dimension — it froze the tab on boot. The infinite scroll comes
+    // from tilePosition, not sprite size (Phaser docs: never make a
+    // TileSprite larger than the canvas). update() grows it if a zoom-out
+    // ever exposes more area than this.
+    const cam = scene.cameras.main;
+    const vw = Math.min(8192, Math.ceil((cam?.displayWidth || scene.scale.width || 1024) * 2));
+    const vh = Math.min(8192, Math.ceil((cam?.displayHeight || scene.scale.height || 768) * 2));
     // Per-axis size resolution:
     //  - User set explicit width/height → honor it.
-    //  - Otherwise: VAST if tiling enabled (infinite repeat), texture
-    //    natural size if tiling disabled (so the shader has nothing to
-    //    tile = no looping on that axis).
-    const w = this.width > 0 ? this.width : (this.tileX ? VAST : texW);
-    const h = this.height > 0 ? this.height : (this.tileY ? VAST : texH);
-    // Default (auto-fill) parks the tile at world origin centered, so the
-    // VAST extent covers ±32k in every direction. Authored finite sizes
-    // anchor at the BP's position (banner / strip / window).
+    //  - Otherwise: viewport-sized if tiling enabled (tilePosition repeats),
+    //    texture natural size if tiling disabled (so the shader has nothing
+    //    to tile = no looping on that axis).
+    const w = this.width > 0 ? this.width : (this.tileX ? vw : texW);
+    const h = this.height > 0 ? this.height : (this.tileY ? vh : texH);
+    // Default (auto-fill) parks the tile at the screen center — update()
+    // re-centers it on the camera every tick. Authored finite sizes anchor
+    // at the BP's position (banner / strip / window).
     const autoFill = this.width <= 0 && this.height <= 0;
-    const x = autoFill ? 0 : this.sprite.gameObject.x;
-    const y = autoFill ? 0 : this.sprite.gameObject.y;
+    const x = autoFill ? (cam?.width ?? 0) / 2 : this.sprite.gameObject.x;
+    const y = autoFill ? (cam?.height ?? 0) / 2 : this.sprite.gameObject.y;
     this.overlay = scene.add.tileSprite(x, y, w, h, key).setOrigin(0.5, 0.5);
     if (this.flipX) this.overlay.flipX = true;
     if (this.flipY) this.overlay.flipY = true;
@@ -238,6 +244,17 @@ export class TiledBackground extends Behavior {
     }
     const cam = scene.cameras.main;
     const autoFill = this.width <= 0 && this.height <= 0;
+    // Grow-only viewport tracking for auto axes: a zoom-out (or window
+    // resize) can expose more area than the init()-time size covered.
+    // Growing is rare (shrink is never needed — over-cover is invisible),
+    // so the canvas realloc inside setSize stays a one-off, not per-frame.
+    if (this.tileX || this.tileY) {
+      const needW = this.width <= 0 && this.tileX ? Math.min(8192, Math.ceil(cam.displayWidth * 2)) : this.overlay.width;
+      const needH = this.height <= 0 && this.tileY ? Math.min(8192, Math.ceil(cam.displayHeight * 2)) : this.overlay.height;
+      if (needW > this.overlay.width || needH > this.overlay.height) {
+        this.overlay.setSize(Math.max(needW, this.overlay.width), Math.max(needH, this.overlay.height));
+      }
+    }
     // Parallax math per axis. When tile-on-axis is OFF the shader can't
     // tile (its sample range matches the texture), so parallax has to
     // come from MOVING THE TILE SPRITE instead of shifting tilePosition.
