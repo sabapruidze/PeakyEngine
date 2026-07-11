@@ -181,12 +181,12 @@ export class TiledBackground extends Behavior {
     //    to tile = no looping on that axis).
     const w = this.width > 0 ? this.width : (this.tileX ? vw : texW);
     const h = this.height > 0 ? this.height : (this.tileY ? vh : texH);
-    // Default (auto-fill) parks the tile at the screen center — update()
-    // re-centers it on the camera every tick. Authored finite sizes anchor
+    // PER-AXIS anchoring: an auto axis parks at the screen center (update()
+    // re-centers every tick; tilePosition supplies the infinite repeat, so a
+    // viewport-sized quad never runs out). An authored finite axis anchors
     // at the BP's position (banner / strip / window).
-    const autoFill = this.width <= 0 && this.height <= 0;
-    const x = autoFill ? (cam?.width ?? 0) / 2 : this.sprite.gameObject.x;
-    const y = autoFill ? (cam?.height ?? 0) / 2 : this.sprite.gameObject.y;
+    const x = this.width  <= 0 ? (cam?.width  ?? 0) / 2 : this.sprite.gameObject.x;
+    const y = this.height <= 0 ? (cam?.height ?? 0) / 2 : this.sprite.gameObject.y;
     this.overlay = scene.add.tileSprite(x, y, w, h, key).setOrigin(0.5, 0.5);
     if (this.flipX) this.overlay.flipX = true;
     if (this.flipY) this.overlay.flipY = true;
@@ -243,7 +243,6 @@ export class TiledBackground extends Behavior {
       }
     }
     const cam = scene.cameras.main;
-    const autoFill = this.width <= 0 && this.height <= 0;
     // Grow-only viewport tracking for auto axes: a zoom-out (or window
     // resize) can expose more area than the init()-time size covered.
     // Growing is rare (shrink is never needed — over-cover is invisible),
@@ -260,8 +259,11 @@ export class TiledBackground extends Behavior {
     // come from MOVING THE TILE SPRITE instead of shifting tilePosition.
     // When ON, the standard TileSprite trick works: tilePosition handles
     // the parallax and the sprite stays put.
-    const baseX = autoFill ? cam.width / 2 : (this.sprite.gameObject.x - cam.scrollX);
-    const baseY = autoFill ? cam.height / 2 : (this.sprite.gameObject.y - cam.scrollY);
+    // PER-AXIS anchor: auto axis = screen center (camera can never scroll
+    // past it — tilePosition makes the repeat look world-locked); explicit
+    // axis = the BP's world position.
+    const baseX = this.width  <= 0 ? cam.width  / 2 : (this.sprite.gameObject.x - cam.scrollX);
+    const baseY = this.height <= 0 ? cam.height / 2 : (this.sprite.gameObject.y - cam.scrollY);
     if (this.mode === "followCamera") {
       const offX = this.tileX ? 0 : -cam.scrollX * this.parallaxFactorX;
       const offY = this.tileY ? 0 : -cam.scrollY * this.parallaxFactorY;
