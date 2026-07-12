@@ -20,6 +20,13 @@ import { Logger } from "../Logger";
  * carry tags, colliders, instance vars). The visual is the TileSprite
  * overlay routed to the BP's camera + layer depth.
  */
+/** Depth floor for background tile sprites: far below any gameplay content
+ *  (layer bands are in the thousands) while leaving room to ADD baseDepth so
+ *  multiple backgrounds still respect layer order + per-instance Z Order.
+ *  A single shared constant here made every background the SAME depth — the
+ *  author's Z Order was ignored and creation order won the tie. */
+const BG_DEPTH_FLOOR = -1_000_000_000;
+
 export class TiledBackground extends Behavior {
   kind = "TiledBackground";
 
@@ -200,12 +207,10 @@ export class TiledBackground extends Behavior {
     // "moves fast almost like ground").
     this.overlay.setScrollFactor(0, 0);
     // Backgrounds ALWAYS render behind everything else, regardless of
-    // which scene layer the BP host is on. Using baseDepth-relative
-    // arithmetic was fragile (a TiledBackground placed on a "top-of-list"
-    // layer ended up with a relatively HIGH absolute depth and rendered
-    // over tilemaps on lower layers). Pin to a fixed deep value so no
-    // other content can ever beat it.
-    this.overlay.setDepth(Number.MIN_SAFE_INTEGER);
+    // which scene layer the BP host is on — but keep their RELATIVE order:
+    // floor + baseDepth preserves layer order and per-instance Z Order
+    // among the backgrounds themselves.
+    this.overlay.setDepth(BG_DEPTH_FLOOR + this._layerBaseDepth);
     this.overlay.setAlpha(this._layerAlpha);
     this.overlay.setVisible(this._layerVisible);
     // Back-compat: if the project has the legacy single `parallaxFactor`
@@ -293,8 +298,9 @@ export class TiledBackground extends Behavior {
     // ignores the layer's parallax to avoid compounding with the per-axis
     // parallaxFactor below.
     this.overlay.setScrollFactor(0, 0);
-    // See init() — pinned to MIN_SAFE_INTEGER, ignoring baseDepth.
-    this.overlay.setDepth(Number.MIN_SAFE_INTEGER);
+    // See init() — deep floor + baseDepth keeps backgrounds behind
+    // everything while Z Order still sorts them among themselves.
+    this.overlay.setDepth(BG_DEPTH_FLOOR + baseDepth);
     this.overlay.setAlpha(alpha);
     this.overlay.setVisible(visible);
   }
